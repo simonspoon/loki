@@ -406,10 +406,74 @@ async fn run(cli: &Cli, driver: &MacOSDriver) -> Result<String, loki_core::LokiE
             }
         }
 
-        // Phase 5+ stubs
-        _ => {
-            eprintln!("not yet implemented");
-            Ok(String::new())
+        Command::WaitFor {
+            window_id,
+            role,
+            title,
+            id,
+            timeout,
+        } => {
+            let window = find_window_ref(driver, *window_id).await?;
+            let query = ElementQuery {
+                role: role.clone(),
+                title: title.clone(),
+                identifier: id.clone(),
+                ..Default::default()
+            };
+            let t = timeout.unwrap_or(cli.timeout);
+            let element = driver.wait_for(&window, &query, t).await?;
+            Ok(loki_core::output::format_elements(&[element], cli.format))
+        }
+
+        Command::WaitGone {
+            window_id,
+            role,
+            title,
+            id,
+            timeout,
+        } => {
+            let window = find_window_ref(driver, *window_id).await?;
+            let query = ElementQuery {
+                role: role.clone(),
+                title: title.clone(),
+                identifier: id.clone(),
+                ..Default::default()
+            };
+            let t = timeout.unwrap_or(cli.timeout);
+            driver.wait_gone(&window, &query, t).await?;
+            match cli.format {
+                OutputFormat::Text => Ok("Element is gone.".to_string()),
+                OutputFormat::Json => Ok(serde_json::to_string_pretty(
+                    &serde_json::json!({ "status": "gone" }),
+                )
+                .unwrap()),
+            }
+        }
+
+        Command::WaitWindow {
+            title,
+            bundle_id,
+            timeout,
+        } => {
+            let filter = WindowFilter {
+                title: title.clone(),
+                bundle_id: bundle_id.clone(),
+                pid: None,
+            };
+            let t = timeout.unwrap_or(cli.timeout);
+            let info = driver.wait_window(&filter, t).await?;
+            Ok(loki_core::output::format_windows(&[info], cli.format))
+        }
+
+        Command::WaitTitle {
+            window_id,
+            pattern,
+            timeout,
+        } => {
+            let window = find_window_ref(driver, *window_id).await?;
+            let t = timeout.unwrap_or(cli.timeout);
+            let info = driver.wait_title(&window, pattern, t).await?;
+            Ok(loki_core::output::format_windows(&[info], cli.format))
         }
     }
 }

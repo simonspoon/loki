@@ -218,20 +218,55 @@ impl DesktopDriver for MacOSDriver {
 
     async fn wait_for(
         &self,
-        _window: &WindowRef,
-        _query: &ElementQuery,
-        _timeout_ms: u64,
+        window: &WindowRef,
+        query: &ElementQuery,
+        timeout_ms: u64,
     ) -> LokiResult<AXElement> {
-        Err(LokiError::Platform("not yet implemented".into()))
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+        let mut delay = Duration::from_millis(50);
+        let max_delay = Duration::from_millis(500);
+
+        loop {
+            match self.find_elements(window, query).await {
+                Ok(elements) if !elements.is_empty() => {
+                    debug!(role = ?query.role, title = ?query.title, "element appeared");
+                    return Ok(elements.into_iter().next().unwrap());
+                }
+                _ => {}
+            }
+            if Instant::now() >= deadline {
+                return Err(LokiError::Timeout(timeout_ms));
+            }
+            sleep(delay).await;
+            delay = (delay * 2).min(max_delay);
+        }
     }
 
     async fn wait_gone(
         &self,
-        _window: &WindowRef,
-        _query: &ElementQuery,
-        _timeout_ms: u64,
+        window: &WindowRef,
+        query: &ElementQuery,
+        timeout_ms: u64,
     ) -> LokiResult<()> {
-        Err(LokiError::Platform("not yet implemented".into()))
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+        let mut delay = Duration::from_millis(50);
+        let max_delay = Duration::from_millis(500);
+
+        loop {
+            match self.find_elements(window, query).await {
+                Ok(elements) if elements.is_empty() => {
+                    debug!(role = ?query.role, title = ?query.title, "element gone");
+                    return Ok(());
+                }
+                Err(_) => return Ok(()), // element tree not accessible = gone
+                _ => {}
+            }
+            if Instant::now() >= deadline {
+                return Err(LokiError::Timeout(timeout_ms));
+            }
+            sleep(delay).await;
+            delay = (delay * 2).min(max_delay);
+        }
     }
 
     async fn wait_window(&self, filter: &WindowFilter, timeout_ms: u64) -> LokiResult<WindowInfo> {
@@ -254,11 +289,27 @@ impl DesktopDriver for MacOSDriver {
 
     async fn wait_title(
         &self,
-        _window: &WindowRef,
-        _pattern: &str,
-        _timeout_ms: u64,
+        window: &WindowRef,
+        pattern: &str,
+        timeout_ms: u64,
     ) -> LokiResult<WindowInfo> {
-        Err(LokiError::Platform("not yet implemented".into()))
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+        let mut delay = Duration::from_millis(50);
+        let max_delay = Duration::from_millis(500);
+
+        loop {
+            if let Ok(info) = self.find_window_info(window).await {
+                if loki_core::query::glob_matches(pattern, &info.title) {
+                    debug!(pattern, title = %info.title, "title matched");
+                    return Ok(info);
+                }
+            }
+            if Instant::now() >= deadline {
+                return Err(LokiError::Timeout(timeout_ms));
+            }
+            sleep(delay).await;
+            delay = (delay * 2).min(max_delay);
+        }
     }
 
     // ── Permissions (Phase 1) ──
