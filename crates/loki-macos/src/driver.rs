@@ -1,10 +1,14 @@
 use async_trait::async_trait;
 use loki_core::{
-    AXElement, AppInfo, DesktopDriver, ElementQuery, LokiError, LokiResult, WindowFilter,
-    WindowInfo, WindowRef,
+    AXElement, AppInfo, AppTarget, DesktopDriver, ElementQuery, LokiError, LokiResult,
+    WindowFilter, WindowInfo, WindowRef,
 };
+use tokio::time::{sleep, Duration, Instant};
+use tracing::debug;
 
+use crate::app;
 use crate::permission;
+use crate::screenshot;
 use crate::window;
 
 /// macOS implementation of the DesktopDriver trait.
@@ -60,23 +64,43 @@ impl DesktopDriver for MacOSDriver {
         Ok(windows.into_iter().next())
     }
 
-    // ── App lifecycle (Phase 2+) ──
+    // ── App lifecycle (Phase 2) ──
 
-    async fn launch_app(
-        &self,
-        _target: &str,
-        _args: &[String],
-        _wait: bool,
-    ) -> LokiResult<AppInfo> {
-        Err(LokiError::Platform("not yet implemented".into()))
+    async fn launch_app(&self, target: &str, args: &[String], wait: bool) -> LokiResult<AppInfo> {
+        let app_target = AppTarget::parse(target);
+        app::launch_app(&app_target, args)?;
+
+        if wait {
+            // Poll for the app's process to appear and become queryable
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let mut delay = Duration::from_millis(50);
+            let max_delay = Duration::from_millis(500);
+
+            loop {
+                if let Ok(info) = app::get_app_info(&app_target) {
+                    return Ok(info);
+                }
+                if Instant::now() >= deadline {
+                    return Err(LokiError::Timeout(10_000));
+                }
+                sleep(delay).await;
+                delay = (delay * 2).min(max_delay);
+            }
+        } else {
+            // Best-effort: try to get info, but don't fail if not ready yet
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            app::get_app_info(&app_target)
+        }
     }
 
-    async fn kill_app(&self, _target: &str, _force: bool) -> LokiResult<()> {
-        Err(LokiError::Platform("not yet implemented".into()))
+    async fn kill_app(&self, target: &str, force: bool) -> LokiResult<()> {
+        let app_target = AppTarget::parse(target);
+        app::kill_app(&app_target, force)
     }
 
-    async fn app_info(&self, _target: &str) -> LokiResult<AppInfo> {
-        Err(LokiError::Platform("not yet implemented".into()))
+    async fn app_info(&self, target: &str) -> LokiResult<AppInfo> {
+        let app_target = AppTarget::parse(target);
+        app::get_app_info(&app_target)
     }
 
     // ── Accessibility tree (Phase 2+) ──
@@ -119,10 +143,18 @@ impl DesktopDriver for MacOSDriver {
         Err(LokiError::Platform("not yet implemented".into()))
     }
 
-    // ── Screenshot (Phase 2+) ──
+    // ── Screenshot (Phase 2) ──
 
-    async fn screenshot(&self, _window_id: Option<u32>, _screen: bool) -> LokiResult<Vec<u8>> {
-        Err(LokiError::Platform("not yet implemented".into()))
+    async fn screenshot(&self, window_id: Option<u32>, screen: bool) -> LokiResult<Vec<u8>> {
+        if screen {
+            screenshot::capture_screen()
+        } else if let Some(wid) = window_id {
+            screenshot::capture_window(wid)
+        } else {
+            Err(LokiError::ScreenshotFailed(
+                "specify --window <ID> or --screen".into(),
+            ))
+        }
     }
 
     // ── Wait (Phase 2+) ──
@@ -145,12 +177,22 @@ impl DesktopDriver for MacOSDriver {
         Err(LokiError::Platform("not yet implemented".into()))
     }
 
-    async fn wait_window(
-        &self,
-        _filter: &WindowFilter,
-        _timeout_ms: u64,
-    ) -> LokiResult<WindowInfo> {
-        Err(LokiError::Platform("not yet implemented".into()))
+    async fn wait_window(&self, filter: &WindowFilter, timeout_ms: u64) -> LokiResult<WindowInfo> {
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+        let mut delay = Duration::from_millis(50);
+        let max_delay = Duration::from_millis(500);
+
+        loop {
+            if let Some(win) = self.find_window(filter).await? {
+                debug!(window_id = win.window_id, "window appeared");
+                return Ok(win);
+            }
+            if Instant::now() >= deadline {
+                return Err(LokiError::Timeout(timeout_ms));
+            }
+            sleep(delay).await;
+            delay = (delay * 2).min(max_delay);
+        }
     }
 
     async fn wait_title(

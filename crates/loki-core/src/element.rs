@@ -1,4 +1,30 @@
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
+
+/// How to identify an application for launch/kill/info operations.
+#[derive(Debug, Clone)]
+pub enum AppTarget {
+    BundleId(String),
+    Path(PathBuf),
+    Pid(u32),
+}
+
+impl AppTarget {
+    /// Auto-detect the target type from a CLI string.
+    /// - If the string parses as a number, treat as PID.
+    /// - If it contains '/' or ends with ".app", treat as path.
+    /// - Otherwise, treat as bundle ID.
+    pub fn parse(s: &str) -> Self {
+        if let Ok(pid) = s.parse::<u32>() {
+            AppTarget::Pid(pid)
+        } else if s.contains('/') || s.ends_with(".app") {
+            AppTarget::Path(PathBuf::from(s))
+        } else {
+            AppTarget::BundleId(s.to_string())
+        }
+    }
+}
 
 /// Bounding rectangle for a window or UI element.
 #[derive(Debug, Clone, Serialize, Deserialize)]

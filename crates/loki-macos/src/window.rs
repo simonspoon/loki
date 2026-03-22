@@ -163,7 +163,7 @@ fn get_bounds(dict: CFDictionaryRef) -> Option<ElementFrame> {
 /// Look up the bundle identifier for a process via lsappinfo.
 fn bundle_id_for_pid(pid: u32) -> Option<String> {
     let output = std::process::Command::new("lsappinfo")
-        .args(["info", "-only", "bundleid", &format!("-pid={pid}")])
+        .args(["info", "-only", "bundleid", "-pid", &pid.to_string()])
         .output()
         .ok()?;
 
@@ -172,12 +172,17 @@ fn bundle_id_for_pid(pid: u32) -> Option<String> {
     }
 
     let text = String::from_utf8_lossy(&output.stdout);
-    // Output format: "bundleid"="com.apple.Finder"
-    let line = text.lines().find(|l| l.contains("bundleid"))?;
-    let value = line.split('=').nth(1)?.trim().trim_matches('"');
-    if value.is_empty() {
-        None
-    } else {
-        Some(value.to_string())
+    // Output varies by macOS version:
+    //   "bundleid"="com.apple.Finder"
+    //   "CFBundleIdentifier"="com.apple.Finder"
+    // Look for any line with an = and extract the value after it.
+    for line in text.lines() {
+        if let Some(val) = line.split('=').nth(1) {
+            let val = val.trim().trim_matches('"');
+            if !val.is_empty() {
+                return Some(val.to_string());
+            }
+        }
     }
+    None
 }

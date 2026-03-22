@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
 use loki_core::{DesktopDriver, OutputFormat, WindowFilter};
 use loki_macos::MacOSDriver;
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 #[derive(Parser)]
@@ -255,7 +256,52 @@ async fn run(cli: &Cli, driver: &MacOSDriver) -> Result<String, loki_core::LokiE
             Ok(String::new())
         }
 
-        // Phase 2+ stubs
+        Command::Launch { target, args, wait } => {
+            let info = driver.launch_app(target, args, *wait).await?;
+            Ok(loki_core::output::format_app_info(&info, cli.format))
+        }
+
+        Command::Kill { target, force } => {
+            driver.kill_app(target, *force).await?;
+            match cli.format {
+                OutputFormat::Text => Ok(format!("Killed: {target}")),
+                OutputFormat::Json => Ok(serde_json::to_string_pretty(
+                    &serde_json::json!({ "killed": target }),
+                )
+                .unwrap()),
+            }
+        }
+
+        Command::AppInfo { target } => {
+            let info = driver.app_info(target).await?;
+            Ok(loki_core::output::format_app_info(&info, cli.format))
+        }
+
+        Command::Screenshot {
+            window,
+            screen,
+            output,
+        } => {
+            let png_bytes = driver.screenshot(*window, *screen).await?;
+            let path = PathBuf::from(output.as_deref().unwrap_or("loki-screenshot.png"));
+            std::fs::write(&path, &png_bytes)?;
+
+            match cli.format {
+                OutputFormat::Text => Ok(format!(
+                    "Screenshot saved: {} ({} bytes)",
+                    path.display(),
+                    png_bytes.len()
+                )),
+                OutputFormat::Json => Ok(serde_json::to_string_pretty(&serde_json::json!({
+                    "path": path.display().to_string(),
+                    "format": "png",
+                    "size": png_bytes.len(),
+                }))
+                .unwrap()),
+            }
+        }
+
+        // Phase 3+ stubs
         _ => {
             eprintln!("not yet implemented");
             Ok(String::new())

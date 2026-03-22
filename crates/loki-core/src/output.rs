@@ -1,7 +1,7 @@
-use crate::element::WindowInfo;
+use crate::element::{AppInfo, WindowInfo};
 
 /// Output format for CLI results.
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum OutputFormat {
     Text,
     Json,
@@ -38,6 +38,26 @@ fn format_windows_text(windows: &[WindowInfo]) -> String {
     }
 
     lines.join("\n")
+}
+
+/// Format app info for display.
+pub fn format_app_info(info: &AppInfo, format: OutputFormat) -> String {
+    match format {
+        OutputFormat::Text => {
+            let mut lines = Vec::new();
+            lines.push(format!("PID:       {}", info.pid));
+            lines.push(format!("Name:      {}", info.name));
+            if let Some(ref bid) = info.bundle_id {
+                lines.push(format!("Bundle ID: {bid}"));
+            }
+            lines.push(format!(
+                "Active:    {}",
+                if info.is_active { "yes" } else { "no" }
+            ));
+            lines.join("\n")
+        }
+        OutputFormat::Json => serde_json::to_string_pretty(info).unwrap_or_default(),
+    }
 }
 
 fn truncate(s: &str, max: usize) -> String {
