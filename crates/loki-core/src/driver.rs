@@ -54,11 +54,11 @@ pub trait DesktopDriver: Send + Sync {
         query: &ElementQuery,
     ) -> LokiResult<AXElement>;
 
-    /// Type a string of text.
-    async fn type_text(&self, text: &str) -> LokiResult<()>;
+    /// Type a string of text. If `pid` is Some, target that process directly.
+    async fn type_text(&self, text: &str, pid: Option<i32>) -> LokiResult<()>;
 
-    /// Press a key combination (e.g. "cmd+shift+s").
-    async fn key_press(&self, combo: &str) -> LokiResult<()>;
+    /// Press a key combination (e.g. "cmd+shift+s"). If `pid` is Some, target that process.
+    async fn key_press(&self, combo: &str, pid: Option<i32>) -> LokiResult<()>;
 
     // ── Screenshot ──
 

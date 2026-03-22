@@ -192,12 +192,18 @@ impl DesktopDriver for MacOSDriver {
         Ok(element)
     }
 
-    async fn type_text(&self, text: &str) -> LokiResult<()> {
-        input::type_text(text)
+    async fn type_text(&self, text: &str, pid: Option<i32>) -> LokiResult<()> {
+        if let Some(p) = pid {
+            app::activate_app(p as u32)?;
+        }
+        input::type_text(text, pid)
     }
 
-    async fn key_press(&self, combo: &str) -> LokiResult<()> {
-        input::send_key_combo(combo)
+    async fn key_press(&self, combo: &str, pid: Option<i32>) -> LokiResult<()> {
+        if let Some(p) = pid {
+            app::activate_app(p as u32)?;
+        }
+        input::send_key_combo(combo, pid)
     }
 
     // ── Screenshot (Phase 2) ──

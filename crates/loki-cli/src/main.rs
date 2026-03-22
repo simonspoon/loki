@@ -119,11 +119,27 @@ enum Command {
         id: Option<String>,
     },
 
-    /// Type a string of text
-    Type { text: String },
+    /// Type a string of text (use --pid or --window to target a specific app)
+    Type {
+        text: String,
+        /// Target process ID
+        #[arg(long)]
+        pid: Option<u32>,
+        /// Target window ID (resolves PID automatically)
+        #[arg(long)]
+        window: Option<u32>,
+    },
 
-    /// Press a key combination (e.g. "cmd+shift+s")
-    Key { combo: String },
+    /// Press a key combination, e.g. "cmd+shift+s" (use --pid or --window to target)
+    Key {
+        combo: String,
+        /// Target process ID
+        #[arg(long)]
+        pid: Option<u32>,
+        /// Target window ID (resolves PID automatically)
+        #[arg(long)]
+        window: Option<u32>,
+    },
 
     /// Wait for an element to appear
     WaitFor {
@@ -382,8 +398,9 @@ async fn run(cli: &Cli, driver: &MacOSDriver) -> Result<String, loki_core::LokiE
             Ok(loki_core::output::format_elements(&[element], cli.format))
         }
 
-        Command::Type { text } => {
-            driver.type_text(text).await?;
+        Command::Type { text, pid, window } => {
+            let target_pid = resolve_target_pid(driver, *pid, *window).await?;
+            driver.type_text(text, target_pid).await?;
             match cli.format {
                 OutputFormat::Text => Ok(format!("Typed: {text}")),
                 OutputFormat::Json => Ok(serde_json::to_string_pretty(&serde_json::json!({
@@ -394,8 +411,9 @@ async fn run(cli: &Cli, driver: &MacOSDriver) -> Result<String, loki_core::LokiE
             }
         }
 
-        Command::Key { combo } => {
-            driver.key_press(combo).await?;
+        Command::Key { combo, pid, window } => {
+            let target_pid = resolve_target_pid(driver, *pid, *window).await?;
+            driver.key_press(combo, target_pid).await?;
             match cli.format {
                 OutputFormat::Text => Ok(format!("Key: {combo}")),
                 OutputFormat::Json => Ok(serde_json::to_string_pretty(&serde_json::json!({
@@ -476,6 +494,23 @@ async fn run(cli: &Cli, driver: &MacOSDriver) -> Result<String, loki_core::LokiE
             Ok(loki_core::output::format_windows(&[info], cli.format))
         }
     }
+}
+
+/// Resolve a target PID from --pid or --window flags.
+/// Returns Some(pid) if either is specified, None otherwise (uses focused app).
+async fn resolve_target_pid(
+    driver: &MacOSDriver,
+    pid: Option<u32>,
+    window_id: Option<u32>,
+) -> Result<Option<i32>, loki_core::LokiError> {
+    if let Some(p) = pid {
+        return Ok(Some(p as i32));
+    }
+    if let Some(wid) = window_id {
+        let wref = find_window_ref(driver, wid).await?;
+        return Ok(Some(wref.pid as i32));
+    }
+    Ok(None)
 }
 
 /// Look up a WindowRef by window ID from the system window list.

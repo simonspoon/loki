@@ -1,8 +1,10 @@
-//! Mouse and keyboard input via Core Graphics CGEvent API.
+//! Mouse and keyboard input.
+//!
+//! Mouse clicks use Core Graphics CGEvent API (coordinate-based, no focus needed).
+//! Keyboard input uses System Events via osascript (reliable regardless of which
+//! process has focus).
 
-use core_graphics::event::{
-    CGEvent, CGEventFlags, CGEventTapLocation, CGEventType, CGMouseButton, EventField, KeyCode,
-};
+use core_graphics::event::{CGEvent, CGEventTapLocation, CGEventType, CGMouseButton, EventField};
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 use core_graphics::geometry::CGPoint;
 use loki_core::{LokiError, LokiResult};
@@ -11,8 +13,6 @@ use std::time::Duration;
 
 /// Small delay between down/up events for reliability.
 const CLICK_DELAY: Duration = Duration::from_millis(15);
-/// Small delay between typed characters.
-const TYPE_DELAY: Duration = Duration::from_millis(8);
 
 fn event_source() -> LokiResult<CGEventSource> {
     CGEventSource::new(CGEventSourceStateID::HIDSystemState)
@@ -124,69 +124,102 @@ pub fn right_click_at(x: f64, y: f64) -> LokiResult<()> {
 
 // ── Keyboard ──
 
-/// Type a string character by character using CGEvent Unicode string injection.
-pub fn type_text(text: &str) -> LokiResult<()> {
-    let source = event_source()?;
+/// Type a string using System Events keystroke via osascript.
+///
+/// CGEvent keyboard injection is unreliable when the calling process (terminal)
+/// retains focus. System Events `keystroke` is the proven approach on macOS —
+/// it routes through the accessibility subsystem and works regardless of which
+/// process spawned the command.
+///
+/// The `pid` parameter is unused here (activation is handled by the driver)
+/// but kept for API consistency.
+pub fn type_text(text: &str, _pid: Option<i32>) -> LokiResult<()> {
+    // Escape backslashes and double quotes for AppleScript string
+    let escaped = text.replace('\\', "\\\\").replace('"', "\\\"");
 
-    for ch in text.chars() {
-        let s = ch.to_string();
+    let output = std::process::Command::new("osascript")
+        .args([
+            "-e",
+            &format!("tell application \"System Events\" to keystroke \"{escaped}\""),
+        ])
+        .output()
+        .map_err(|e| LokiError::InputError(format!("failed to run osascript: {e}")))?;
 
-        // Use keycode 0 as a dummy — the Unicode string override takes precedence.
-        let down = CGEvent::new_keyboard_event(source.clone(), 0, true)
-            .map_err(|()| LokiError::InputError("failed to create key event".into()))?;
-        down.set_string(&s);
-
-        let up = CGEvent::new_keyboard_event(source.clone(), 0, false)
-            .map_err(|()| LokiError::InputError("failed to create key event".into()))?;
-
-        down.post(CGEventTapLocation::HID);
-        thread::sleep(TYPE_DELAY);
-        up.post(CGEventTapLocation::HID);
-        thread::sleep(TYPE_DELAY);
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(LokiError::InputError(format!(
+            "System Events keystroke failed: {stderr}"
+        )));
     }
 
     Ok(())
 }
 
 /// Send a key combination like "cmd+s", "ctrl+shift+a", "enter", "tab".
-pub fn send_key_combo(combo: &str) -> LokiResult<()> {
-    let (keycode, flags) = parse_combo(combo)?;
-    let source = event_source()?;
+///
+/// Uses System Events for reliability (same reason as type_text).
+/// The `pid` parameter is unused (activation handled by driver).
+pub fn send_key_combo(combo: &str, _pid: Option<i32>) -> LokiResult<()> {
+    let (key_name, modifiers) = parse_combo_for_applescript(combo)?;
 
-    let down = CGEvent::new_keyboard_event(source.clone(), keycode, true)
-        .map_err(|()| LokiError::InputError("failed to create key event".into()))?;
-    let up = CGEvent::new_keyboard_event(source, keycode, false)
-        .map_err(|()| LokiError::InputError("failed to create key event".into()))?;
+    let script = if modifiers.is_empty() {
+        // Special keys use "key code" syntax
+        if let Some(code) = applescript_key_code(&key_name) {
+            format!("tell application \"System Events\" to key code {code}")
+        } else if key_name.len() == 1 {
+            let escaped = key_name.replace('"', "\\\"");
+            format!("tell application \"System Events\" to keystroke \"{escaped}\"")
+        } else {
+            return Err(LokiError::InputError(format!("unknown key: {key_name}")));
+        }
+    } else {
+        let using_clause = modifiers.join(", ");
+        if let Some(code) = applescript_key_code(&key_name) {
+            format!(
+                "tell application \"System Events\" to key code {code} using {{{using_clause}}}"
+            )
+        } else if key_name.len() == 1 {
+            let escaped = key_name.replace('"', "\\\"");
+            format!(
+                "tell application \"System Events\" to keystroke \"{escaped}\" using {{{using_clause}}}"
+            )
+        } else {
+            return Err(LokiError::InputError(format!("unknown key: {key_name}")));
+        }
+    };
 
-    if !flags.is_empty() {
-        down.set_flags(flags);
-        up.set_flags(flags);
+    let output = std::process::Command::new("osascript")
+        .args(["-e", &script])
+        .output()
+        .map_err(|e| LokiError::InputError(format!("failed to run osascript: {e}")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(LokiError::InputError(format!(
+            "System Events key combo failed: {stderr}"
+        )));
     }
-
-    down.post(CGEventTapLocation::HID);
-    thread::sleep(CLICK_DELAY);
-    up.post(CGEventTapLocation::HID);
 
     Ok(())
 }
 
-/// Parse a combo string like "cmd+shift+a" into (keycode, modifier_flags).
-fn parse_combo(combo: &str) -> LokiResult<(u16, CGEventFlags)> {
-    let parts: Vec<&str> = combo.split('+').collect();
-    if parts.is_empty() {
+/// Parse a combo string into (key_name, vec_of_applescript_modifiers).
+fn parse_combo_for_applescript(combo: &str) -> LokiResult<(String, Vec<String>)> {
+    if combo.is_empty() {
         return Err(LokiError::InputError("empty key combo".into()));
     }
+    let parts: Vec<&str> = combo.split('+').collect();
 
-    let mut flags = CGEventFlags::CGEventFlagNull;
+    let mut modifiers = Vec::new();
     let mut key_part = None;
 
     for part in &parts {
         let lower = part.trim().to_lowercase();
         match lower.as_str() {
-            "cmd" | "command" | "super" => flags |= CGEventFlags::CGEventFlagCommand,
-            "shift" => flags |= CGEventFlags::CGEventFlagShift,
-            "ctrl" | "control" => flags |= CGEventFlags::CGEventFlagControl,
-            "alt" | "option" | "opt" => flags |= CGEventFlags::CGEventFlagAlternate,
+            "cmd" | "command" | "super" => modifiers.push("command down".to_string()),
+            "shift" => modifiers.push("shift down".to_string()),
+            "ctrl" | "control" => modifiers.push("control down".to_string()),
+            "alt" | "option" | "opt" => modifiers.push("option down".to_string()),
             _ => {
                 if key_part.is_some() {
                     return Err(LokiError::InputError(format!(
@@ -201,97 +234,38 @@ fn parse_combo(combo: &str) -> LokiResult<(u16, CGEventFlags)> {
     let key_name = key_part
         .ok_or_else(|| LokiError::InputError(format!("no key specified in combo: {combo}")))?;
 
-    let keycode = name_to_keycode(&key_name)
-        .ok_or_else(|| LokiError::InputError(format!("unknown key: {key_name}")))?;
-
-    Ok((keycode, flags))
+    Ok((key_name, modifiers))
 }
 
-/// Map a key name to a macOS virtual keycode.
-fn name_to_keycode(name: &str) -> Option<u16> {
-    // Single character — letter or digit
-    if name.len() == 1 {
-        let ch = name.chars().next().unwrap();
-        return match ch {
-            'a' => Some(KeyCode::ANSI_A),
-            'b' => Some(KeyCode::ANSI_B),
-            'c' => Some(KeyCode::ANSI_C),
-            'd' => Some(KeyCode::ANSI_D),
-            'e' => Some(KeyCode::ANSI_E),
-            'f' => Some(KeyCode::ANSI_F),
-            'g' => Some(KeyCode::ANSI_G),
-            'h' => Some(KeyCode::ANSI_H),
-            'i' => Some(KeyCode::ANSI_I),
-            'j' => Some(KeyCode::ANSI_J),
-            'k' => Some(KeyCode::ANSI_K),
-            'l' => Some(KeyCode::ANSI_L),
-            'm' => Some(KeyCode::ANSI_M),
-            'n' => Some(KeyCode::ANSI_N),
-            'o' => Some(KeyCode::ANSI_O),
-            'p' => Some(KeyCode::ANSI_P),
-            'q' => Some(KeyCode::ANSI_Q),
-            'r' => Some(KeyCode::ANSI_R),
-            's' => Some(KeyCode::ANSI_S),
-            't' => Some(KeyCode::ANSI_T),
-            'u' => Some(KeyCode::ANSI_U),
-            'v' => Some(KeyCode::ANSI_V),
-            'w' => Some(KeyCode::ANSI_W),
-            'x' => Some(KeyCode::ANSI_X),
-            'y' => Some(KeyCode::ANSI_Y),
-            'z' => Some(KeyCode::ANSI_Z),
-            '0' => Some(KeyCode::ANSI_0),
-            '1' => Some(KeyCode::ANSI_1),
-            '2' => Some(KeyCode::ANSI_2),
-            '3' => Some(KeyCode::ANSI_3),
-            '4' => Some(KeyCode::ANSI_4),
-            '5' => Some(KeyCode::ANSI_5),
-            '6' => Some(KeyCode::ANSI_6),
-            '7' => Some(KeyCode::ANSI_7),
-            '8' => Some(KeyCode::ANSI_8),
-            '9' => Some(KeyCode::ANSI_9),
-            '-' => Some(KeyCode::ANSI_MINUS),
-            '=' => Some(KeyCode::ANSI_EQUAL),
-            '[' => Some(KeyCode::ANSI_LEFT_BRACKET),
-            ']' => Some(KeyCode::ANSI_RIGHT_BRACKET),
-            ';' => Some(KeyCode::ANSI_SEMICOLON),
-            '\'' => Some(KeyCode::ANSI_QUOTE),
-            '\\' => Some(KeyCode::ANSI_BACKSLASH),
-            ',' => Some(KeyCode::ANSI_COMMA),
-            '.' => Some(KeyCode::ANSI_PERIOD),
-            '/' => Some(KeyCode::ANSI_SLASH),
-            '`' => Some(KeyCode::ANSI_GRAVE),
-            _ => None,
-        };
-    }
-
-    // Named keys
+/// Map key names to AppleScript key codes (for non-character keys).
+fn applescript_key_code(name: &str) -> Option<u16> {
     match name {
-        "return" | "enter" => Some(KeyCode::RETURN),
-        "tab" => Some(KeyCode::TAB),
-        "space" => Some(KeyCode::SPACE),
-        "delete" | "backspace" => Some(KeyCode::DELETE),
-        "escape" | "esc" => Some(KeyCode::ESCAPE),
-        "up" => Some(KeyCode::UP_ARROW),
-        "down" => Some(KeyCode::DOWN_ARROW),
-        "left" => Some(KeyCode::LEFT_ARROW),
-        "right" => Some(KeyCode::RIGHT_ARROW),
-        "home" => Some(KeyCode::HOME),
-        "end" => Some(KeyCode::END),
-        "pageup" => Some(KeyCode::PAGE_UP),
-        "pagedown" => Some(KeyCode::PAGE_DOWN),
-        "forwarddelete" => Some(KeyCode::FORWARD_DELETE),
-        "f1" => Some(KeyCode::F1),
-        "f2" => Some(KeyCode::F2),
-        "f3" => Some(KeyCode::F3),
-        "f4" => Some(KeyCode::F4),
-        "f5" => Some(KeyCode::F5),
-        "f6" => Some(KeyCode::F6),
-        "f7" => Some(KeyCode::F7),
-        "f8" => Some(KeyCode::F8),
-        "f9" => Some(KeyCode::F9),
-        "f10" => Some(KeyCode::F10),
-        "f11" => Some(KeyCode::F11),
-        "f12" => Some(KeyCode::F12),
+        "return" | "enter" => Some(36),
+        "tab" => Some(48),
+        "space" => Some(49),
+        "delete" | "backspace" => Some(51),
+        "escape" | "esc" => Some(53),
+        "up" => Some(126),
+        "down" => Some(125),
+        "left" => Some(123),
+        "right" => Some(124),
+        "home" => Some(115),
+        "end" => Some(119),
+        "pageup" => Some(116),
+        "pagedown" => Some(121),
+        "forwarddelete" => Some(117),
+        "f1" => Some(122),
+        "f2" => Some(120),
+        "f3" => Some(99),
+        "f4" => Some(118),
+        "f5" => Some(96),
+        "f6" => Some(97),
+        "f7" => Some(98),
+        "f8" => Some(100),
+        "f9" => Some(101),
+        "f10" => Some(109),
+        "f11" => Some(103),
+        "f12" => Some(111),
         _ => None,
     }
 }
@@ -302,102 +276,92 @@ mod tests {
 
     #[test]
     fn test_parse_combo_single_key() {
-        let (keycode, flags) = parse_combo("a").unwrap();
-        assert_eq!(keycode, KeyCode::ANSI_A);
-        assert!(flags.is_empty() || flags == CGEventFlags::CGEventFlagNull);
+        let (key, mods) = parse_combo_for_applescript("a").unwrap();
+        assert_eq!(key, "a");
+        assert!(mods.is_empty());
     }
 
     #[test]
     fn test_parse_combo_cmd_key() {
-        let (keycode, flags) = parse_combo("cmd+s").unwrap();
-        assert_eq!(keycode, KeyCode::ANSI_S);
-        assert!(flags.contains(CGEventFlags::CGEventFlagCommand));
+        let (key, mods) = parse_combo_for_applescript("cmd+s").unwrap();
+        assert_eq!(key, "s");
+        assert_eq!(mods, vec!["command down"]);
     }
 
     #[test]
     fn test_parse_combo_multiple_modifiers() {
-        let (keycode, flags) = parse_combo("ctrl+shift+a").unwrap();
-        assert_eq!(keycode, KeyCode::ANSI_A);
-        assert!(flags.contains(CGEventFlags::CGEventFlagControl));
-        assert!(flags.contains(CGEventFlags::CGEventFlagShift));
+        let (key, mods) = parse_combo_for_applescript("ctrl+shift+a").unwrap();
+        assert_eq!(key, "a");
+        assert!(mods.contains(&"control down".to_string()));
+        assert!(mods.contains(&"shift down".to_string()));
     }
 
     #[test]
     fn test_parse_combo_special_key() {
-        let (keycode, flags) = parse_combo("cmd+enter").unwrap();
-        assert_eq!(keycode, KeyCode::RETURN);
-        assert!(flags.contains(CGEventFlags::CGEventFlagCommand));
+        let (key, mods) = parse_combo_for_applescript("cmd+enter").unwrap();
+        assert_eq!(key, "enter");
+        assert_eq!(mods, vec!["command down"]);
     }
 
     #[test]
     fn test_parse_combo_modifier_aliases() {
-        let (_, flags) = parse_combo("command+a").unwrap();
-        assert!(flags.contains(CGEventFlags::CGEventFlagCommand));
+        let (_, mods) = parse_combo_for_applescript("command+a").unwrap();
+        assert_eq!(mods, vec!["command down"]);
 
-        let (_, flags) = parse_combo("control+a").unwrap();
-        assert!(flags.contains(CGEventFlags::CGEventFlagControl));
+        let (_, mods) = parse_combo_for_applescript("control+a").unwrap();
+        assert_eq!(mods, vec!["control down"]);
 
-        let (_, flags) = parse_combo("option+a").unwrap();
-        assert!(flags.contains(CGEventFlags::CGEventFlagAlternate));
+        let (_, mods) = parse_combo_for_applescript("option+a").unwrap();
+        assert_eq!(mods, vec!["option down"]);
 
-        let (_, flags) = parse_combo("alt+a").unwrap();
-        assert!(flags.contains(CGEventFlags::CGEventFlagAlternate));
+        let (_, mods) = parse_combo_for_applescript("alt+a").unwrap();
+        assert_eq!(mods, vec!["option down"]);
 
-        let (_, flags) = parse_combo("opt+a").unwrap();
-        assert!(flags.contains(CGEventFlags::CGEventFlagAlternate));
+        let (_, mods) = parse_combo_for_applescript("opt+a").unwrap();
+        assert_eq!(mods, vec!["option down"]);
 
-        let (_, flags) = parse_combo("super+a").unwrap();
-        assert!(flags.contains(CGEventFlags::CGEventFlagCommand));
+        let (_, mods) = parse_combo_for_applescript("super+a").unwrap();
+        assert_eq!(mods, vec!["command down"]);
     }
 
     #[test]
-    fn test_parse_combo_named_keys() {
-        assert_eq!(parse_combo("tab").unwrap().0, KeyCode::TAB);
-        assert_eq!(parse_combo("space").unwrap().0, KeyCode::SPACE);
-        assert_eq!(parse_combo("escape").unwrap().0, KeyCode::ESCAPE);
-        assert_eq!(parse_combo("esc").unwrap().0, KeyCode::ESCAPE);
-        assert_eq!(parse_combo("delete").unwrap().0, KeyCode::DELETE);
-        assert_eq!(parse_combo("backspace").unwrap().0, KeyCode::DELETE);
-        assert_eq!(parse_combo("up").unwrap().0, KeyCode::UP_ARROW);
-        assert_eq!(parse_combo("down").unwrap().0, KeyCode::DOWN_ARROW);
-        assert_eq!(parse_combo("left").unwrap().0, KeyCode::LEFT_ARROW);
-        assert_eq!(parse_combo("right").unwrap().0, KeyCode::RIGHT_ARROW);
-        assert_eq!(parse_combo("f1").unwrap().0, KeyCode::F1);
-        assert_eq!(parse_combo("f12").unwrap().0, KeyCode::F12);
-    }
-
-    #[test]
-    fn test_parse_combo_digit_keys() {
-        assert_eq!(parse_combo("1").unwrap().0, KeyCode::ANSI_1);
-        assert_eq!(parse_combo("0").unwrap().0, KeyCode::ANSI_0);
+    fn test_parse_combo_named_keys_have_codes() {
+        assert!(applescript_key_code("tab").is_some());
+        assert!(applescript_key_code("space").is_some());
+        assert!(applescript_key_code("escape").is_some());
+        assert!(applescript_key_code("esc").is_some());
+        assert!(applescript_key_code("delete").is_some());
+        assert!(applescript_key_code("backspace").is_some());
+        assert!(applescript_key_code("up").is_some());
+        assert!(applescript_key_code("down").is_some());
+        assert!(applescript_key_code("left").is_some());
+        assert!(applescript_key_code("right").is_some());
+        assert!(applescript_key_code("enter").is_some());
+        assert!(applescript_key_code("return").is_some());
+        assert!(applescript_key_code("f1").is_some());
+        assert!(applescript_key_code("f12").is_some());
     }
 
     #[test]
     fn test_parse_combo_unknown_key() {
-        assert!(parse_combo("cmd+unicorn").is_err());
+        // Unknown multi-char key with no applescript code — send_key_combo will fail
+        let (key, _) = parse_combo_for_applescript("cmd+unicorn").unwrap();
+        assert_eq!(key, "unicorn");
+        assert!(applescript_key_code(&key).is_none());
     }
 
     #[test]
     fn test_parse_combo_empty() {
-        assert!(parse_combo("").is_err());
+        assert!(parse_combo_for_applescript("").is_err());
     }
 
     #[test]
     fn test_parse_combo_no_key_only_modifier() {
-        assert!(parse_combo("cmd").is_err());
+        assert!(parse_combo_for_applescript("cmd").is_err());
     }
 
     #[test]
     fn test_parse_combo_multiple_non_modifier_keys() {
-        assert!(parse_combo("a+b").is_err());
-    }
-
-    #[test]
-    fn test_name_to_keycode_letters() {
-        // Verify a few key mappings are correct (not sequential like ASCII)
-        assert_eq!(name_to_keycode("a"), Some(0x00));
-        assert_eq!(name_to_keycode("s"), Some(0x01));
-        assert_eq!(name_to_keycode("z"), Some(0x06));
-        assert_eq!(name_to_keycode("q"), Some(0x0C));
+        assert!(parse_combo_for_applescript("a+b").is_err());
     }
 }

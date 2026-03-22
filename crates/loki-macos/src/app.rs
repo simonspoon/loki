@@ -325,6 +325,27 @@ fn bundle_id_for_pid(pid: u32) -> Option<String> {
     None
 }
 
+/// Bring an application to the foreground by PID.
+pub fn activate_app(pid: u32) -> LokiResult<()> {
+    let output = Command::new("osascript")
+        .args([
+            "-e",
+            &format!(
+                "tell application \"System Events\" to set frontmost of (first process whose unix id is {pid}) to true"
+            ),
+        ])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        warn!(pid, %stderr, "failed to activate app");
+    }
+
+    // Give macOS a moment to complete the activation
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    Ok(())
+}
+
 /// Check if a PID is the frontmost application.
 fn is_frontmost(pid: u32) -> bool {
     let output = Command::new("lsappinfo")

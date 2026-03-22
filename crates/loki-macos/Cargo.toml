@@ -9,7 +9,7 @@ description = "macOS implementation of Loki desktop automation"
 [dependencies]
 loki-core = { path = "../loki-core" }
 core-foundation = "0.10"
-core-graphics = "0.25"
+core-graphics = { version = "0.25", features = ["elcapitan"] }
 tokio = { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true }
