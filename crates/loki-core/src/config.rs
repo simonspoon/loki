@@ -33,3 +33,43 @@ impl LokiConfig {
         dirs::home_dir().map(|h| h.join(".loki").join("config.json"))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_timeout() {
+        let config = LokiConfig::default();
+        assert_eq!(config.timeout_ms, 5000);
+    }
+
+    #[test]
+    fn test_load_falls_back_to_default() {
+        // When no config file exists, load() returns defaults
+        let config = LokiConfig::load();
+        assert_eq!(config.timeout_ms, 5000);
+    }
+
+    #[test]
+    fn test_deserialize_with_timeout() {
+        let json = r#"{"timeout_ms": 10000}"#;
+        let config: LokiConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.timeout_ms, 10000);
+    }
+
+    #[test]
+    fn test_deserialize_empty_uses_default() {
+        let json = "{}";
+        let config: LokiConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.timeout_ms, 5000);
+    }
+
+    #[test]
+    fn test_serialize_roundtrip() {
+        let config = LokiConfig { timeout_ms: 7500 };
+        let json = serde_json::to_string(&config).unwrap();
+        let parsed: LokiConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.timeout_ms, 7500);
+    }
+}
