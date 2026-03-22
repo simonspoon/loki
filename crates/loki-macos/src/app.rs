@@ -120,7 +120,23 @@ fn resolve_pids(target: &AppTarget) -> LokiResult<Vec<u32>> {
 }
 
 /// Get PIDs for a bundle identifier using lsappinfo.
+///
+/// `lsappinfo -app` is case-sensitive, but `open -b` and users often use
+/// a different case than what macOS registers. We try exact match first,
+/// then fall back to a case-insensitive scan of all running apps.
 fn pids_for_bundle_id(bundle_id: &str) -> LokiResult<Vec<u32>> {
+    // Try exact match first (fast path)
+    if let Ok(pids) = pids_for_bundle_id_exact(bundle_id) {
+        if !pids.is_empty() {
+            return Ok(pids);
+        }
+    }
+
+    // Fall back to case-insensitive scan of running apps
+    pids_for_bundle_id_scan(bundle_id)
+}
+
+fn pids_for_bundle_id_exact(bundle_id: &str) -> LokiResult<Vec<u32>> {
     let output = Command::new("lsappinfo")
         .args(["info", "-only", "pid", "-app", bundle_id])
         .output()?;
@@ -129,8 +145,109 @@ fn pids_for_bundle_id(bundle_id: &str) -> LokiResult<Vec<u32>> {
         return Ok(vec![]);
     }
 
+    Ok(parse_pid_output(&String::from_utf8_lossy(&output.stdout)))
+}
+
+fn pids_for_bundle_id_scan(bundle_id: &str) -> LokiResult<Vec<u32>> {
+    let output = Command::new("lsappinfo")
+        .arg("list")
+        .output()?;
+
+    if !output.status.success() {
+        return Ok(vec![]);
+    }
+
     let text = String::from_utf8_lossy(&output.stdout);
-    // Output format: "pid"=12345  or  "pid" = 12345
+    let bid_lower = bundle_id.to_ascii_lowercase();
+    let mut pids = Vec::new();
+
+    // lsappinfo list output has blocks per app. Each block has lines like:
+    //   bundleID="com.apple.calculator"
+    //   pid = 42446 type="Foreground" ...
+    // Blocks are separated by blank lines or new app headers.
+    let mut current_pid: Option<u32> = None;
+    let mut current_bid_matches = false;
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+
+        if let Some(val) = extract_quoted_value(line, "bundleID") {
+            current_bid_matches = val.to_ascii_lowercase() == bid_lower;
+        }
+
+        // Match pid lines: "pid = 42446 ..." or "pid"=42446
+        if trimmed.starts_with("pid")
+            || trimmed.starts_with("\"pid\"")
+        {
+            if let Some(pid) = extract_pid_value(line) {
+                current_pid = Some(pid);
+            }
+        }
+
+        // New app block starts with number+) like "103) "Calculator" ASN:..."
+        // or blank line signals end of block
+        let is_block_boundary = trimmed.is_empty()
+            || (trimmed.len() > 2
+                && trimmed.chars().next().is_some_and(|c| c.is_ascii_digit())
+                && trimmed.contains(')'));
+
+        if is_block_boundary && current_bid_matches {
+            if let Some(pid) = current_pid {
+                pids.push(pid);
+            }
+            current_pid = None;
+            current_bid_matches = false;
+        } else if is_block_boundary {
+            current_pid = None;
+            current_bid_matches = false;
+        }
+    }
+    // Handle last block
+    if current_bid_matches {
+        if let Some(pid) = current_pid {
+            pids.push(pid);
+        }
+    }
+
+    Ok(pids)
+}
+
+fn extract_quoted_value(line: &str, key: &str) -> Option<String> {
+    // Match patterns like:
+    //   bundleID="com.apple.calculator"      (no quotes on key)
+    //   "bundleID"="com.apple.calculator"    (quotes on key)
+    //   "pid"=42446                          (quotes on key)
+    let trimmed = line.trim();
+    // Check both quoted and unquoted key forms
+    let has_key = trimmed.starts_with(&format!("{key}="))
+        || trimmed.starts_with(&format!("{key} ="))
+        || trimmed.starts_with(&format!("\"{key}\"="))
+        || trimmed.starts_with(&format!("\"{key}\" ="));
+    if !has_key {
+        return None;
+    }
+    let after_eq = trimmed.split('=').nth(1)?;
+    let val = after_eq.trim().trim_matches('"');
+    if val.is_empty() {
+        None
+    } else {
+        Some(val.to_string())
+    }
+}
+
+fn extract_pid_value(line: &str) -> Option<u32> {
+    // Match lines like:  pid = 42446 type="Foreground"...
+    // or:  "pid"=42446
+    if !line.contains("pid") {
+        return None;
+    }
+    let after_eq = line.split('=').nth(1)?;
+    // Take only the first whitespace-delimited token after '='
+    let token = after_eq.split_whitespace().next()?;
+    token.trim_matches('"').parse::<u32>().ok().filter(|&p| p > 0)
+}
+
+fn parse_pid_output(text: &str) -> Vec<u32> {
     let mut pids = Vec::new();
     for line in text.lines() {
         if let Some(val) = line.split('=').nth(1) {
@@ -141,8 +258,7 @@ fn pids_for_bundle_id(bundle_id: &str) -> LokiResult<Vec<u32>> {
             }
         }
     }
-
-    Ok(pids)
+    pids
 }
 
 /// Get the bundle ID from an .app path using mdls.

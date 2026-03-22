@@ -27,13 +27,22 @@ impl ElementQuery {
             }
         }
         if let Some(ref pat) = self.title {
-            match &element.title {
-                Some(t) => {
-                    if !glob_matches(pat, t) {
-                        return false;
-                    }
-                }
-                None => return false,
+            // Match against title, description, or identifier — whichever is
+            // the best human-readable label for this element.
+            let matches_any_label = element
+                .title
+                .as_deref()
+                .is_some_and(|t| glob_matches(pat, t))
+                || element
+                    .description
+                    .as_deref()
+                    .is_some_and(|d| glob_matches(pat, d))
+                || element
+                    .identifier
+                    .as_deref()
+                    .is_some_and(|i| glob_matches(pat, i));
+            if !matches_any_label {
+                return false;
             }
         }
         if let Some(ref id) = self.identifier {

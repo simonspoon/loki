@@ -74,10 +74,16 @@ fn format_tree_text(element: &AXElement, indent: usize) -> String {
 
     let mut line = format!("{prefix}{}", element.role);
 
-    if let Some(ref title) = element.title {
-        if !title.is_empty() {
-            line.push_str(&format!(" \"{title}\""));
-        }
+    // Show the best available label: title, then description, then identifier
+    let label = element
+        .title
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .or(element.description.as_deref().filter(|s| !s.is_empty()))
+        .or(element.identifier.as_deref().filter(|s| !s.is_empty()));
+
+    if let Some(label) = label {
+        line.push_str(&format!(" \"{label}\""));
     }
 
     if let Some(ref frame) = element.frame {
@@ -130,10 +136,15 @@ fn format_elements_text(elements: &[AXElement]) -> String {
     for el in elements {
         let mut parts = vec![el.role.clone()];
 
-        if let Some(ref title) = el.title {
-            if !title.is_empty() {
-                parts.push(format!("\"{title}\""));
-            }
+        // Show the best available label
+        let label = el
+            .title
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .or(el.description.as_deref().filter(|s| !s.is_empty()));
+
+        if let Some(label) = label {
+            parts.push(format!("\"{label}\""));
         }
 
         if let Some(ref id) = el.identifier {

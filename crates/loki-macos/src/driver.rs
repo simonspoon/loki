@@ -60,7 +60,7 @@ impl DesktopDriver for MacOSDriver {
                 }
                 if let Some(ref bid) = filter.bundle_id {
                     match &w.bundle_id {
-                        Some(wb) if wb == bid => {}
+                        Some(wb) if wb.eq_ignore_ascii_case(bid) => {}
                         _ => return false,
                     }
                 }
