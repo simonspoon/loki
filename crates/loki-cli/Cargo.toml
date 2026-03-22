@@ -1,0 +1,21 @@
+[package]
+name = "loki-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "CLI binary for Loki desktop automation"
+
+[[bin]]
+name = "loki"
+path = "src/main.rs"
+
+[dependencies]
+loki-core = { path = "../loki-core" }
+loki-macos = { path = "../loki-macos" }
+clap = { version = "4", features = ["derive", "env"] }
+clap_complete = "4"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde_json = { workspace = true }

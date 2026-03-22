@@ -1,0 +1,17 @@
+[package]
+name = "loki-macos"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "macOS implementation of Loki desktop automation"
+
+[dependencies]
+loki-core = { path = "../loki-core" }
+core-foundation = "0.10"
+core-graphics = "0.25"
+tokio = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = "0.1"

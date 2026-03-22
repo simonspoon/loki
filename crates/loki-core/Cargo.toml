@@ -1,0 +1,17 @@
+[package]
+name = "loki-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Platform-agnostic types and traits for Loki desktop automation"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+async-trait = "0.1"
+clap = { version = "4", features = ["derive"] }
+glob = "0.3"
+dirs = "6"

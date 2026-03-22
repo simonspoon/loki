@@ -1,0 +1,35 @@
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+
+/// Minimal configuration for Loki.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LokiConfig {
+    #[serde(default = "default_timeout")]
+    pub timeout_ms: u64,
+}
+
+fn default_timeout() -> u64 {
+    5000
+}
+
+impl Default for LokiConfig {
+    fn default() -> Self {
+        Self {
+            timeout_ms: default_timeout(),
+        }
+    }
+}
+
+impl LokiConfig {
+    /// Load config from `~/.loki/config.json`, falling back to defaults.
+    pub fn load() -> Self {
+        Self::config_path()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
+    }
+
+    fn config_path() -> Option<PathBuf> {
+        dirs::home_dir().map(|h| h.join(".loki").join("config.json"))
+    }
+}
