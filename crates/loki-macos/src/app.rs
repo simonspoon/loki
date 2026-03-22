@@ -149,9 +149,7 @@ fn pids_for_bundle_id_exact(bundle_id: &str) -> LokiResult<Vec<u32>> {
 }
 
 fn pids_for_bundle_id_scan(bundle_id: &str) -> LokiResult<Vec<u32>> {
-    let output = Command::new("lsappinfo")
-        .arg("list")
-        .output()?;
+    let output = Command::new("lsappinfo").arg("list").output()?;
 
     if !output.status.success() {
         return Ok(vec![]);
@@ -176,9 +174,7 @@ fn pids_for_bundle_id_scan(bundle_id: &str) -> LokiResult<Vec<u32>> {
         }
 
         // Match pid lines: "pid = 42446 ..." or "pid"=42446
-        if trimmed.starts_with("pid")
-            || trimmed.starts_with("\"pid\"")
-        {
+        if trimmed.starts_with("pid") || trimmed.starts_with("\"pid\"") {
             if let Some(pid) = extract_pid_value(line) {
                 current_pid = Some(pid);
             }
@@ -244,7 +240,11 @@ fn extract_pid_value(line: &str) -> Option<u32> {
     let after_eq = line.split('=').nth(1)?;
     // Take only the first whitespace-delimited token after '='
     let token = after_eq.split_whitespace().next()?;
-    token.trim_matches('"').parse::<u32>().ok().filter(|&p| p > 0)
+    token
+        .trim_matches('"')
+        .parse::<u32>()
+        .ok()
+        .filter(|&p| p > 0)
 }
 
 fn parse_pid_output(text: &str) -> Vec<u32> {

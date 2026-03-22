@@ -336,7 +336,77 @@ async fn run(cli: &Cli, driver: &MacOSDriver) -> Result<String, loki_core::LokiE
             Ok(loki_core::output::format_elements(&elements, cli.format))
         }
 
-        // Phase 4+ stubs
+        Command::Click {
+            x,
+            y,
+            double,
+            right,
+        } => {
+            driver.click(*x, *y, *double, *right).await?;
+            match cli.format {
+                OutputFormat::Text => Ok(format!(
+                    "Clicked at ({x}, {y}){}",
+                    if *double {
+                        " (double)"
+                    } else if *right {
+                        " (right)"
+                    } else {
+                        ""
+                    }
+                )),
+                OutputFormat::Json => Ok(serde_json::to_string_pretty(&serde_json::json!({
+                    "action": "click",
+                    "x": x,
+                    "y": y,
+                    "double": double,
+                    "right": right,
+                }))
+                .unwrap()),
+            }
+        }
+
+        Command::ClickElement {
+            window_id,
+            role,
+            title,
+            id,
+        } => {
+            let window = find_window_ref(driver, *window_id).await?;
+            let query = ElementQuery {
+                role: role.clone(),
+                title: title.clone(),
+                identifier: id.clone(),
+                ..Default::default()
+            };
+            let element = driver.click_element(&window, &query).await?;
+            Ok(loki_core::output::format_elements(&[element], cli.format))
+        }
+
+        Command::Type { text } => {
+            driver.type_text(text).await?;
+            match cli.format {
+                OutputFormat::Text => Ok(format!("Typed: {text}")),
+                OutputFormat::Json => Ok(serde_json::to_string_pretty(&serde_json::json!({
+                    "action": "type",
+                    "text": text,
+                }))
+                .unwrap()),
+            }
+        }
+
+        Command::Key { combo } => {
+            driver.key_press(combo).await?;
+            match cli.format {
+                OutputFormat::Text => Ok(format!("Key: {combo}")),
+                OutputFormat::Json => Ok(serde_json::to_string_pretty(&serde_json::json!({
+                    "action": "key",
+                    "combo": combo,
+                }))
+                .unwrap()),
+            }
+        }
+
+        // Phase 5+ stubs
         _ => {
             eprintln!("not yet implemented");
             Ok(String::new())

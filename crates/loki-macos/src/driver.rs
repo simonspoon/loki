@@ -8,6 +8,7 @@ use tracing::debug;
 
 use crate::accessibility;
 use crate::app;
+use crate::input;
 use crate::permission;
 use crate::screenshot;
 use crate::window;
@@ -149,24 +150,54 @@ impl DesktopDriver for MacOSDriver {
 
     // ── Input (Phase 2+) ──
 
-    async fn click(&self, _x: f64, _y: f64, _double: bool, _right: bool) -> LokiResult<()> {
-        Err(LokiError::Platform("not yet implemented".into()))
+    async fn click(&self, x: f64, y: f64, double: bool, right: bool) -> LokiResult<()> {
+        if double {
+            input::double_click_at(x, y)
+        } else if right {
+            input::right_click_at(x, y)
+        } else {
+            input::click_at(x, y)
+        }
     }
 
     async fn click_element(
         &self,
-        _window: &WindowRef,
-        _query: &ElementQuery,
+        window: &WindowRef,
+        query: &ElementQuery,
     ) -> LokiResult<AXElement> {
-        Err(LokiError::Platform("not yet implemented".into()))
+        let elements = self.find_elements(window, query).await?;
+        let element = elements.into_iter().next().ok_or_else(|| {
+            LokiError::ElementNotFound(format!(
+                "no element matching query in window {}",
+                window.window_id
+            ))
+        })?;
+
+        let frame = element
+            .frame
+            .as_ref()
+            .ok_or_else(|| LokiError::ElementNotFound("matched element has no frame".into()))?;
+
+        let center_x = frame.x + frame.width / 2.0;
+        let center_y = frame.y + frame.height / 2.0;
+        debug!(
+            role = %element.role,
+            title = ?element.title,
+            x = center_x,
+            y = center_y,
+            "clicking element center"
+        );
+
+        input::click_at(center_x, center_y)?;
+        Ok(element)
     }
 
-    async fn type_text(&self, _text: &str) -> LokiResult<()> {
-        Err(LokiError::Platform("not yet implemented".into()))
+    async fn type_text(&self, text: &str) -> LokiResult<()> {
+        input::type_text(text)
     }
 
-    async fn key_press(&self, _combo: &str) -> LokiResult<()> {
-        Err(LokiError::Platform("not yet implemented".into()))
+    async fn key_press(&self, combo: &str) -> LokiResult<()> {
+        input::send_key_combo(combo)
     }
 
     // ── Screenshot (Phase 2) ──
