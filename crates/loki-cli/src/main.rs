@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use loki_core::{DesktopDriver, OutputFormat, WindowFilter};
+use loki_core::{DesktopDriver, ElementQuery, OutputFormat, WindowFilter, WindowRef};
 use loki_macos::MacOSDriver;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -301,10 +301,64 @@ async fn run(cli: &Cli, driver: &MacOSDriver) -> Result<String, loki_core::LokiE
             }
         }
 
-        // Phase 3+ stubs
+        Command::Tree {
+            window_id,
+            depth,
+            flat,
+        } => {
+            let window = find_window_ref(driver, *window_id).await?;
+            let tree = driver.get_tree(&window, *depth).await?;
+
+            if *flat {
+                let elements = loki_core::output::flatten_tree(&tree);
+                Ok(loki_core::output::format_elements(&elements, cli.format))
+            } else {
+                Ok(loki_core::output::format_tree(&tree, cli.format))
+            }
+        }
+
+        Command::Find {
+            window_id,
+            role,
+            title,
+            id,
+            index,
+        } => {
+            let window = find_window_ref(driver, *window_id).await?;
+            let query = ElementQuery {
+                role: role.clone(),
+                title: title.clone(),
+                identifier: id.clone(),
+                index: *index,
+                ..Default::default()
+            };
+            let elements = driver.find_elements(&window, &query).await?;
+            Ok(loki_core::output::format_elements(&elements, cli.format))
+        }
+
+        // Phase 4+ stubs
         _ => {
             eprintln!("not yet implemented");
             Ok(String::new())
         }
     }
+}
+
+/// Look up a WindowRef by window ID from the system window list.
+async fn find_window_ref(
+    driver: &MacOSDriver,
+    window_id: u32,
+) -> Result<WindowRef, loki_core::LokiError> {
+    let filter = WindowFilter::default();
+    let windows = driver.list_windows(&filter).await?;
+
+    let info = windows
+        .into_iter()
+        .find(|w| w.window_id == window_id)
+        .ok_or_else(|| loki_core::LokiError::WindowNotFound(format!("window_id={window_id}")))?;
+
+    Ok(WindowRef {
+        window_id: info.window_id,
+        pid: info.pid,
+    })
 }

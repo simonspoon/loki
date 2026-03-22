@@ -6,6 +6,7 @@ use loki_core::{
 use tokio::time::{sleep, Duration, Instant};
 use tracing::debug;
 
+use crate::accessibility;
 use crate::app;
 use crate::permission;
 use crate::screenshot;
@@ -23,6 +24,22 @@ impl MacOSDriver {
 impl Default for MacOSDriver {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl MacOSDriver {
+    /// Look up a WindowInfo by WindowRef (window_id + pid) from the Core Graphics window list.
+    async fn find_window_info(&self, window: &WindowRef) -> LokiResult<WindowInfo> {
+        let filter = WindowFilter {
+            pid: Some(window.pid),
+            ..Default::default()
+        };
+        let windows = self.list_windows(&filter).await?;
+
+        windows
+            .into_iter()
+            .find(|w| w.window_id == window.window_id)
+            .ok_or_else(|| LokiError::WindowNotFound(format!("window_id={}", window.window_id)))
     }
 }
 
@@ -107,18 +124,27 @@ impl DesktopDriver for MacOSDriver {
 
     async fn get_tree(
         &self,
-        _window: &WindowRef,
-        _max_depth: Option<usize>,
+        window: &WindowRef,
+        max_depth: Option<usize>,
     ) -> LokiResult<AXElement> {
-        Err(LokiError::Platform("not yet implemented".into()))
+        if !self.has_accessibility_permission() {
+            return Err(LokiError::PermissionDenied);
+        }
+
+        // Find the window's title from the window list so we can match the AX element
+        let win_info = self.find_window_info(window).await?;
+        let ax_window = accessibility::find_window_element(window.pid as i32, &win_info.title)?;
+
+        accessibility::walk_tree(ax_window, max_depth, 0, vec![])
     }
 
     async fn find_elements(
         &self,
-        _window: &WindowRef,
-        _query: &ElementQuery,
+        window: &WindowRef,
+        query: &ElementQuery,
     ) -> LokiResult<Vec<AXElement>> {
-        Err(LokiError::Platform("not yet implemented".into()))
+        let tree = self.get_tree(window, query.max_depth).await?;
+        Ok(loki_core::query::search_tree(&tree, query))
     }
 
     // ── Input (Phase 2+) ──

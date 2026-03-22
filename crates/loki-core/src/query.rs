@@ -1,6 +1,8 @@
 use glob::Pattern;
 use serde::{Deserialize, Serialize};
 
+use crate::element::AXElement;
+
 /// Query to find UI elements in the accessibility tree.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ElementQuery {
@@ -11,6 +13,118 @@ pub struct ElementQuery {
     pub description: Option<String>,
     pub index: Option<usize>,
     pub max_depth: Option<usize>,
+}
+
+impl ElementQuery {
+    /// Check if an AXElement matches this query.
+    ///
+    /// All specified criteria must match (AND logic).
+    /// Role matching is case-insensitive and allows with or without "AX" prefix.
+    pub fn matches(&self, element: &AXElement) -> bool {
+        if let Some(ref role_pattern) = self.role {
+            if !role_matches(role_pattern, &element.role) {
+                return false;
+            }
+        }
+        if let Some(ref pat) = self.title {
+            match &element.title {
+                Some(t) => {
+                    if !glob_matches(pat, t) {
+                        return false;
+                    }
+                }
+                None => return false,
+            }
+        }
+        if let Some(ref id) = self.identifier {
+            match &element.identifier {
+                Some(eid) => {
+                    if eid != id {
+                        return false;
+                    }
+                }
+                None => return false,
+            }
+        }
+        if let Some(ref pat) = self.value {
+            match &element.value {
+                Some(v) => {
+                    if !glob_matches(pat, v) {
+                        return false;
+                    }
+                }
+                None => return false,
+            }
+        }
+        if let Some(ref pat) = self.description {
+            match &element.description {
+                Some(d) => {
+                    if !glob_matches(pat, d) {
+                        return false;
+                    }
+                }
+                None => return false,
+            }
+        }
+        true
+    }
+}
+
+/// Check if a role pattern matches an element role.
+/// Case-insensitive, allows both "AXButton" and "button" to match "AXButton".
+fn role_matches(pattern: &str, element_role: &str) -> bool {
+    let p = pattern.to_lowercase();
+    let r = element_role.to_lowercase();
+
+    // Strip "ax" prefix from both for comparison
+    let p_stripped = p.strip_prefix("ax").unwrap_or(&p);
+    let r_stripped = r.strip_prefix("ax").unwrap_or(&r);
+
+    p_stripped == r_stripped
+}
+
+/// Search an AXElement tree for elements matching a query.
+/// Returns all matches up to the query's index limit.
+pub fn search_tree(root: &AXElement, query: &ElementQuery) -> Vec<AXElement> {
+    let mut results = Vec::new();
+    search_recursive(root, query, 0, &mut results);
+
+    // If query.index is set, return only the nth match
+    if let Some(idx) = query.index {
+        if idx < results.len() {
+            vec![results.remove(idx)]
+        } else {
+            Vec::new()
+        }
+    } else {
+        results
+    }
+}
+
+fn search_recursive(
+    element: &AXElement,
+    query: &ElementQuery,
+    depth: usize,
+    results: &mut Vec<AXElement>,
+) {
+    // Respect query max_depth
+    if let Some(max_d) = query.max_depth {
+        if depth > max_d {
+            return;
+        }
+    }
+
+    if query.matches(element) {
+        // Clone without children for flat results
+        results.push(AXElement {
+            children: Vec::new(),
+            ..element.clone()
+        });
+    }
+
+    for child in &element.children {
+        search_recursive(child, query, depth + 1, results);
+    }
 }
 
 /// Filter for window discovery.
@@ -56,5 +170,196 @@ mod tests {
     #[test]
     fn test_glob_invalid_falls_back_to_substring() {
         assert!(glob_matches("[invalid", "[invalid pattern"));
+    }
+
+    // ── Role matching tests ──
+
+    #[test]
+    fn test_role_matches_exact() {
+        assert!(role_matches("AXButton", "AXButton"));
+        assert!(role_matches("AXWindow", "AXWindow"));
+    }
+
+    #[test]
+    fn test_role_matches_without_prefix() {
+        assert!(role_matches("button", "AXButton"));
+        assert!(role_matches("window", "AXWindow"));
+        assert!(role_matches("textfield", "AXTextField"));
+    }
+
+    #[test]
+    fn test_role_matches_case_insensitive() {
+        assert!(role_matches("BUTTON", "AXButton"));
+        assert!(role_matches("axbutton", "AXButton"));
+        assert!(role_matches("Button", "AXButton"));
+    }
+
+    #[test]
+    fn test_role_matches_mismatch() {
+        assert!(!role_matches("button", "AXTextField"));
+        assert!(!role_matches("AXWindow", "AXButton"));
+    }
+
+    // ── ElementQuery::matches tests ──
+
+    fn make_element(role: &str, title: Option<&str>) -> AXElement {
+        AXElement {
+            role: role.to_string(),
+            subrole: None,
+            title: title.map(|s| s.to_string()),
+            value: None,
+            description: None,
+            identifier: None,
+            frame: None,
+            enabled: true,
+            focused: false,
+            path: vec![],
+            children: vec![],
+        }
+    }
+
+    #[test]
+    fn test_query_matches_empty_matches_all() {
+        let q = ElementQuery::default();
+        assert!(q.matches(&make_element("AXButton", Some("OK"))));
+        assert!(q.matches(&make_element("AXWindow", None)));
+    }
+
+    #[test]
+    fn test_query_matches_role_only() {
+        let q = ElementQuery {
+            role: Some("button".to_string()),
+            ..Default::default()
+        };
+        assert!(q.matches(&make_element("AXButton", Some("OK"))));
+        assert!(!q.matches(&make_element("AXTextField", Some("name"))));
+    }
+
+    #[test]
+    fn test_query_matches_title_glob() {
+        let q = ElementQuery {
+            title: Some("Untitled*".to_string()),
+            ..Default::default()
+        };
+        assert!(q.matches(&make_element("AXWindow", Some("Untitled"))));
+        assert!(q.matches(&make_element("AXWindow", Some("Untitled — Edited"))));
+        assert!(!q.matches(&make_element("AXWindow", Some("Document 1"))));
+        assert!(!q.matches(&make_element("AXWindow", None)));
+    }
+
+    #[test]
+    fn test_query_matches_and_logic() {
+        let q = ElementQuery {
+            role: Some("button".to_string()),
+            title: Some("OK".to_string()),
+            ..Default::default()
+        };
+        assert!(q.matches(&make_element("AXButton", Some("OK"))));
+        assert!(!q.matches(&make_element("AXButton", Some("Cancel"))));
+        assert!(!q.matches(&make_element("AXTextField", Some("OK"))));
+    }
+
+    #[test]
+    fn test_query_matches_identifier() {
+        let mut el = make_element("AXButton", Some("OK"));
+        el.identifier = Some("btn-ok".to_string());
+
+        let q = ElementQuery {
+            identifier: Some("btn-ok".to_string()),
+            ..Default::default()
+        };
+        assert!(q.matches(&el));
+
+        let q2 = ElementQuery {
+            identifier: Some("btn-cancel".to_string()),
+            ..Default::default()
+        };
+        assert!(!q2.matches(&el));
+    }
+
+    // ── search_tree tests ──
+
+    fn make_tree() -> AXElement {
+        AXElement {
+            role: "AXWindow".to_string(),
+            title: Some("Main".to_string()),
+            children: vec![
+                AXElement {
+                    role: "AXButton".to_string(),
+                    title: Some("OK".to_string()),
+                    path: vec![0],
+                    children: vec![],
+                    ..make_element("AXButton", Some("OK"))
+                },
+                AXElement {
+                    role: "AXButton".to_string(),
+                    title: Some("Cancel".to_string()),
+                    path: vec![1],
+                    children: vec![],
+                    ..make_element("AXButton", Some("Cancel"))
+                },
+                AXElement {
+                    role: "AXTextField".to_string(),
+                    title: Some("Name".to_string()),
+                    path: vec![2],
+                    children: vec![AXElement {
+                        role: "AXStaticText".to_string(),
+                        title: Some("placeholder".to_string()),
+                        path: vec![2, 0],
+                        children: vec![],
+                        ..make_element("AXStaticText", Some("placeholder"))
+                    }],
+                    ..make_element("AXTextField", Some("Name"))
+                },
+            ],
+            ..make_element("AXWindow", Some("Main"))
+        }
+    }
+
+    #[test]
+    fn test_search_tree_by_role() {
+        let tree = make_tree();
+        let q = ElementQuery {
+            role: Some("button".to_string()),
+            ..Default::default()
+        };
+        let results = search_tree(&tree, &q);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].title.as_deref(), Some("OK"));
+        assert_eq!(results[1].title.as_deref(), Some("Cancel"));
+    }
+
+    #[test]
+    fn test_search_tree_by_index() {
+        let tree = make_tree();
+        let q = ElementQuery {
+            role: Some("button".to_string()),
+            index: Some(1),
+            ..Default::default()
+        };
+        let results = search_tree(&tree, &q);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].title.as_deref(), Some("Cancel"));
+    }
+
+    #[test]
+    fn test_search_tree_max_depth() {
+        let tree = make_tree();
+        let q = ElementQuery {
+            role: Some("statictext".to_string()),
+            max_depth: Some(1),
+            ..Default::default()
+        };
+        // statictext is at depth 2, max_depth 1 should miss it
+        let results = search_tree(&tree, &q);
+        assert_eq!(results.len(), 0);
+
+        // Without max_depth, should find it
+        let q2 = ElementQuery {
+            role: Some("statictext".to_string()),
+            ..Default::default()
+        };
+        let results2 = search_tree(&tree, &q2);
+        assert_eq!(results2.len(), 1);
     }
 }
