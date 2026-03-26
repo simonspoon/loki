@@ -78,6 +78,26 @@ responsive. The CLI uses `#[tokio::main]` with the multi-thread runtime.
 through `Result<T, LokiError>` and are printed to stderr. The CLI returns
 `ExitCode` based on the error variant.
 
+## Testing
+
+Tests live at two levels:
+
+**Unit tests** — inline `#[cfg(test)]` modules in the crate source files. These
+cover core types and logic without requiring accessibility permission or a
+running app:
+
+- `loki-core`: `element.rs`, `config.rs`, `error.rs`, `output.rs`, `query.rs`
+- `loki-macos`: `input.rs`, `app.rs`
+
+Run with `cargo test` (the default test run skips ignored tests).
+
+**CLI integration tests** — `crates/loki-cli/tests/cli.rs`, using `assert_cmd`
+and `predicates`. These invoke the compiled `loki` binary and check exit codes,
+stdout, and stderr. Tests that do not need accessibility permission (help output,
+argument validation, `check-permission`, `windows`, `completions`) run normally.
+Tests that require accessibility permission or a running app are marked
+`#[ignore]` and can be run explicitly with `cargo test -- --ignored`.
+
 ## Output formatting
 
 Every command supports `--format text` (default, human-readable) and
