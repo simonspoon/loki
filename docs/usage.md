@@ -29,11 +29,12 @@ After granting, restart your terminal for the permission to take effect.
 
 ### Launch
 
-Start an app by bundle ID or file path:
+Start an app by name, bundle ID, or file path:
 
 ```bash
-loki launch com.apple.Calculator
-loki launch /Applications/Safari.app
+loki launch Calculator                    # By app name
+loki launch com.apple.Calculator          # By bundle ID
+loki launch /Applications/Safari.app      # By path
 loki launch com.apple.TextEdit --args /tmp/test.txt
 ```
 
@@ -55,7 +56,10 @@ loki kill --force com.apple.Calculator   # SIGKILL
 Get info about a running app:
 
 ```bash
-loki app-info com.apple.Calculator
+loki app-info Calculator                  # By app name
+loki app-info com.apple.Calculator        # By bundle ID
+loki app-info --pid 12345                 # By process ID
+loki app-info --bundle-id com.apple.Calculator
 ```
 
 Returns PID, bundle ID, name, and whether the app is active.
@@ -65,11 +69,15 @@ Returns PID, bundle ID, name, and whether the app is active.
 List open windows, optionally filtered:
 
 ```bash
-loki windows                              # All windows
-loki windows --title "Calculator"         # By title substring
+loki windows                              # Named windows only
+loki windows --all                        # Include untitled windows
+loki windows --title "Calculator"         # By title glob
 loki windows --bundle-id com.apple.Safari # By bundle ID
 loki windows --pid 12345                  # By process ID
 ```
+
+By default, windows with empty titles (system-level helper windows) are hidden.
+Use `--all` to include them.
 
 Each window has a numeric `window_id` used by other commands.
 
@@ -110,7 +118,12 @@ Filters:
 loki click 100 200                        # Left click
 loki click 100 200 --double               # Double click
 loki click 100 200 --right                # Right click
+loki click 100 200 --pid 12345            # Activate app first, then click
+loki click 100 200 --window <WINDOW_ID>   # Activate app by window, then click
 ```
+
+Use `--pid` or `--window` to ensure the target app is frontmost before clicking.
+Without these flags, the click goes to whatever window is at those coordinates.
 
 ### Click a UI element
 
@@ -147,11 +160,13 @@ Modifier names: `cmd`, `shift`, `ctrl`, `alt`/`option`.
 ## Screenshots
 
 ```bash
-loki screenshot                           # Capture all screens
-loki screenshot --window <WINDOW_ID>      # Capture specific window
+loki screenshot --window <WINDOW_ID>      # Capture by window ID
+loki screenshot --window "Calculator"     # Capture by window title
 loki screenshot --screen                  # Capture full screen
 loki screenshot --output result.png       # Custom output path
 ```
+
+The `--window` flag accepts either a numeric window ID or a window title string.
 
 Default output: `loki-screenshot.png` in the current directory.
 

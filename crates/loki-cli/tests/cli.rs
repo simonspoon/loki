@@ -200,6 +200,64 @@ fn test_type_missing_text() {
         .stderr(predicate::str::contains("required"));
 }
 
+// ── Version ──
+
+#[test]
+fn test_version_flag() {
+    loki()
+        .arg("--version")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("loki"));
+}
+
+// ── app-info flags ──
+
+#[test]
+fn test_app_info_no_args() {
+    // No target, --pid, or --bundle-id should fail
+    loki().arg("app-info").assert().failure();
+}
+
+#[test]
+fn test_app_info_with_pid_flag() {
+    // Invalid PID should fail with app not found
+    loki()
+        .args(["app-info", "--pid", "99999"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("app not found"));
+}
+
+// ── PID validation for type/key/click ──
+
+#[test]
+fn test_type_invalid_pid_fails() {
+    loki()
+        .args(["type", "hello", "--pid", "99999"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("99999"));
+}
+
+#[test]
+fn test_key_invalid_pid_fails() {
+    loki()
+        .args(["key", "cmd+a", "--pid", "99999"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("99999"));
+}
+
+#[test]
+fn test_click_invalid_pid_fails() {
+    loki()
+        .args(["click", "100", "100", "--pid", "99999"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("99999"));
+}
+
 // ── Accessibility-dependent tests ──
 // These require accessibility permission and are skipped by default.
 
@@ -233,6 +291,53 @@ fn test_find_with_real_window() {
         let wid = first["window_id"].as_u64().unwrap();
         loki()
             .args(["find", &wid.to_string(), "--role", "AXButton"])
+            .assert()
+            .success();
+    }
+}
+
+#[test]
+#[ignore]
+fn test_click_element_activates_app() {
+    // Regression test: click-element must activate the target app before clicking.
+    // Without activation, CGEvent clicks land on whatever window is in the foreground.
+    let output = loki()
+        .args(["--format", "json", "windows"])
+        .output()
+        .unwrap();
+    let windows: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    if let Some(first) = windows.as_array().and_then(|a| a.first()) {
+        let wid = first["window_id"].as_u64().unwrap();
+        // Find any button and click it — this exercises the activate+click path
+        loki()
+            .args(["click-element", &wid.to_string(), "--role", "AXButton"])
+            .assert()
+            .success();
+    }
+}
+
+#[test]
+#[ignore]
+fn test_click_with_pid_activates_app() {
+    // Regression test: click --pid must activate the target app before clicking.
+    let output = loki()
+        .args(["--format", "json", "windows"])
+        .output()
+        .unwrap();
+    let windows: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    if let Some(first) = windows.as_array().and_then(|a| a.first()) {
+        let pid = first["pid"].as_u64().unwrap();
+        let frame = &first["frame"];
+        let x = frame["x"].as_f64().unwrap() + frame["width"].as_f64().unwrap() / 2.0;
+        let y = frame["y"].as_f64().unwrap() + frame["height"].as_f64().unwrap() / 2.0;
+        loki()
+            .args([
+                "click",
+                &x.to_string(),
+                &y.to_string(),
+                "--pid",
+                &pid.to_string(),
+            ])
             .assert()
             .success();
     }

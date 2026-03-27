@@ -13,6 +13,9 @@ pub fn launch_app(target: &AppTarget, args: &[String]) -> LokiResult<()> {
         AppTarget::BundleId(bid) => {
             cmd.args(["-b", bid]);
         }
+        AppTarget::Name(name) => {
+            cmd.args(["-a", name]);
+        }
         AppTarget::Path(path) => {
             cmd.arg(path);
         }
@@ -108,6 +111,7 @@ fn resolve_pids(target: &AppTarget) -> LokiResult<Vec<u32>> {
             }
         }
         AppTarget::BundleId(bid) => pids_for_bundle_id(bid),
+        AppTarget::Name(name) => pids_for_app_name(name),
         AppTarget::Path(path) => {
             // Extract bundle ID from the app path via mdls, or app name from path
             if let Some(bid) = bundle_id_from_path(path) {
@@ -117,6 +121,21 @@ fn resolve_pids(target: &AppTarget) -> LokiResult<Vec<u32>> {
             }
         }
     }
+}
+
+/// Get PIDs for an application by its display name using pgrep.
+fn pids_for_app_name(name: &str) -> LokiResult<Vec<u32>> {
+    let output = Command::new("pgrep").args(["-ix", name]).output()?;
+
+    if !output.status.success() {
+        return Ok(vec![]);
+    }
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    Ok(text
+        .lines()
+        .filter_map(|line| line.trim().parse::<u32>().ok())
+        .collect())
 }
 
 /// Get PIDs for a bundle identifier using lsappinfo.
@@ -317,7 +336,7 @@ fn bundle_id_for_pid(pid: u32) -> Option<String> {
     for line in text.lines() {
         if let Some(val) = line.split('=').nth(1) {
             let val = val.trim().trim_matches('"');
-            if !val.is_empty() {
+            if !val.is_empty() && val != "[ NULL ]" && val != "(null)" {
                 return Some(val.to_string());
             }
         }
@@ -338,7 +357,10 @@ pub fn activate_app(pid: u32) -> LokiResult<()> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        warn!(pid, %stderr, "failed to activate app");
+        return Err(LokiError::AppNotFound(format!(
+            "cannot activate PID {pid}: {}",
+            stderr.trim()
+        )));
     }
 
     // Give macOS a moment to complete the activation
@@ -396,6 +418,14 @@ mod tests {
         match AppTarget::parse("com.apple.TextEdit") {
             AppTarget::BundleId(bid) => assert_eq!(bid, "com.apple.TextEdit"),
             other => panic!("expected BundleId, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_app_target_parse_name() {
+        match AppTarget::parse("Finder") {
+            AppTarget::Name(name) => assert_eq!(name, "Finder"),
+            other => panic!("expected Name, got {other:?}"),
         }
     }
 }

@@ -142,6 +142,8 @@ pub struct WindowFilter {
     pub title: Option<String>,
     pub bundle_id: Option<String>,
     pub pid: Option<u32>,
+    /// If false (default), exclude windows with empty titles from listing.
+    pub include_unnamed: bool,
 }
 
 /// Check if a string matches a glob pattern (case-insensitive).

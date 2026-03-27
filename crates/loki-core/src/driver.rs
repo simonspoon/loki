@@ -44,8 +44,15 @@ pub trait DesktopDriver: Send + Sync {
 
     // ── Input ──
 
-    /// Click at absolute screen coordinates.
-    async fn click(&self, x: f64, y: f64, double: bool, right: bool) -> LokiResult<()>;
+    /// Click at absolute screen coordinates. If `pid` is Some, activate that app first.
+    async fn click(
+        &self,
+        x: f64,
+        y: f64,
+        double: bool,
+        right: bool,
+        pid: Option<i32>,
+    ) -> LokiResult<()>;
 
     /// Click the center of a UI element.
     async fn click_element(

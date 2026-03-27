@@ -179,7 +179,7 @@ fn bundle_id_for_pid(pid: u32) -> Option<String> {
     for line in text.lines() {
         if let Some(val) = line.split('=').nth(1) {
             let val = val.trim().trim_matches('"');
-            if !val.is_empty() {
+            if !val.is_empty() && val != "[ NULL ]" && val != "(null)" {
                 return Some(val.to_string());
             }
         }

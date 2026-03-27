@@ -5,7 +5,11 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 #[derive(Parser)]
-#[command(name = "loki", about = "Desktop app automation for QA testing")]
+#[command(
+    name = "loki",
+    about = "Desktop app automation for QA testing",
+    version
+)]
 struct Cli {
     #[arg(
         short,
@@ -39,6 +43,9 @@ enum Command {
         pid: Option<u32>,
         #[arg(long)]
         title: Option<String>,
+        /// Include windows with empty titles
+        #[arg(long)]
+        all: bool,
     },
 
     /// Check if accessibility permission is granted
@@ -64,12 +71,22 @@ enum Command {
     },
 
     /// Get info about a running application
-    AppInfo { target: String },
+    AppInfo {
+        /// Target app (bundle ID, path, PID, or name)
+        target: Option<String>,
+        /// Target process ID
+        #[arg(long)]
+        pid: Option<u32>,
+        /// Target bundle ID
+        #[arg(long)]
+        bundle_id: Option<String>,
+    },
 
     /// Capture a screenshot
     Screenshot {
+        /// Window ID (numeric) or window title (string)
         #[arg(long)]
-        window: Option<u32>,
+        window: Option<String>,
         #[arg(long)]
         screen: bool,
         #[arg(long, short)]
@@ -106,6 +123,12 @@ enum Command {
         double: bool,
         #[arg(long)]
         right: bool,
+        /// Target process ID (activates app before clicking)
+        #[arg(long)]
+        pid: Option<u32>,
+        /// Target window ID (activates app before clicking)
+        #[arg(long)]
+        window: Option<u32>,
     },
 
     /// Click a UI element by query
@@ -218,11 +241,13 @@ async fn run(cli: &Cli, driver: &MacOSDriver) -> Result<String, loki_core::LokiE
             bundle_id,
             pid,
             title,
+            all,
         } => {
             let filter = WindowFilter {
                 title: title.clone(),
                 bundle_id: bundle_id.clone(),
                 pid: *pid,
+                include_unnamed: *all,
             };
             let windows = driver.list_windows(&filter).await?;
             Ok(loki_core::output::format_windows(&windows, cli.format))
@@ -288,8 +313,23 @@ async fn run(cli: &Cli, driver: &MacOSDriver) -> Result<String, loki_core::LokiE
             }
         }
 
-        Command::AppInfo { target } => {
-            let info = driver.app_info(target).await?;
+        Command::AppInfo {
+            target,
+            pid,
+            bundle_id,
+        } => {
+            let resolved = if let Some(p) = pid {
+                p.to_string()
+            } else if let Some(ref bid) = bundle_id {
+                bid.clone()
+            } else if let Some(ref t) = target {
+                t.clone()
+            } else {
+                return Err(loki_core::LokiError::InputError(
+                    "specify a target, --pid, or --bundle-id".into(),
+                ));
+            };
+            let info = driver.app_info(&resolved).await?;
             Ok(loki_core::output::format_app_info(&info, cli.format))
         }
 
@@ -298,7 +338,28 @@ async fn run(cli: &Cli, driver: &MacOSDriver) -> Result<String, loki_core::LokiE
             screen,
             output,
         } => {
-            let png_bytes = driver.screenshot(*window, *screen).await?;
+            let window_id = match window {
+                Some(ref w) => {
+                    if let Ok(id) = w.parse::<u32>() {
+                        Some(id)
+                    } else {
+                        // Treat as window title — look it up
+                        let filter = WindowFilter {
+                            title: Some(w.clone()),
+                            include_unnamed: true,
+                            ..Default::default()
+                        };
+                        let win = driver.find_window(&filter).await?.ok_or_else(|| {
+                            loki_core::LokiError::WindowNotFound(format!(
+                                "no window matching title '{w}'"
+                            ))
+                        })?;
+                        Some(win.window_id)
+                    }
+                }
+                None => None,
+            };
+            let png_bytes = driver.screenshot(window_id, *screen).await?;
             let path = PathBuf::from(output.as_deref().unwrap_or("loki-screenshot.png"));
             std::fs::write(&path, &png_bytes)?;
 
@@ -357,8 +418,11 @@ async fn run(cli: &Cli, driver: &MacOSDriver) -> Result<String, loki_core::LokiE
             y,
             double,
             right,
+            pid,
+            window,
         } => {
-            driver.click(*x, *y, *double, *right).await?;
+            let target_pid = resolve_target_pid(driver, *pid, *window).await?;
+            driver.click(*x, *y, *double, *right, target_pid).await?;
             match cli.format {
                 OutputFormat::Text => Ok(format!(
                     "Clicked at ({x}, {y}){}",
@@ -477,6 +541,7 @@ async fn run(cli: &Cli, driver: &MacOSDriver) -> Result<String, loki_core::LokiE
                 title: title.clone(),
                 bundle_id: bundle_id.clone(),
                 pid: None,
+                include_unnamed: true,
             };
             let t = timeout.unwrap_or(cli.timeout);
             let info = driver.wait_window(&filter, t).await?;
@@ -518,7 +583,10 @@ async fn find_window_ref(
     driver: &MacOSDriver,
     window_id: u32,
 ) -> Result<WindowRef, loki_core::LokiError> {
-    let filter = WindowFilter::default();
+    let filter = WindowFilter {
+        include_unnamed: true,
+        ..Default::default()
+    };
     let windows = driver.list_windows(&filter).await?;
 
     let info = windows

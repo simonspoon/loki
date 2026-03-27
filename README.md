@@ -47,17 +47,17 @@ loki kill com.apple.Calculator
 
 | Command | Description |
 |---------|-------------|
-| `launch` | Launch an app by bundle ID or path |
+| `launch` | Launch an app by name, bundle ID, or path |
 | `kill` | Terminate an app |
-| `app-info` | Get info about a running app |
+| `app-info` | Get info about a running app (by name, bundle ID, or --pid) |
 | `windows` | List open windows (filter by title/bundle-id/pid) |
 | `tree` | Dump accessibility tree for a window |
 | `find` | Find elements by role, title, identifier |
-| `click` | Click at screen coordinates |
+| `click` | Click at screen coordinates (use --pid to target an app) |
 | `click-element` | Click a UI element by query |
 | `type` | Type text (use --window to target an app) |
 | `key` | Send key combo, e.g. `cmd+s`, `ctrl+shift+a` |
-| `screenshot` | Capture window or screen as PNG |
+| `screenshot` | Capture window (by ID or title) or screen as PNG |
 | `wait-for` | Wait for an element to appear |
 | `wait-gone` | Wait for an element to disappear |
 | `wait-window` | Wait for a window to appear |

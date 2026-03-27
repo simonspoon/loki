@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone)]
 pub enum AppTarget {
     BundleId(String),
+    Name(String),
     Path(PathBuf),
     Pid(u32),
 }
@@ -14,14 +15,17 @@ impl AppTarget {
     /// Auto-detect the target type from a CLI string.
     /// - If the string parses as a number, treat as PID.
     /// - If it contains '/' or ends with ".app", treat as path.
-    /// - Otherwise, treat as bundle ID.
+    /// - If it contains '.', treat as bundle ID (e.g. "com.apple.Finder").
+    /// - Otherwise, treat as app name (e.g. "Finder", "Calculator").
     pub fn parse(s: &str) -> Self {
         if let Ok(pid) = s.parse::<u32>() {
             AppTarget::Pid(pid)
         } else if s.contains('/') || s.ends_with(".app") {
             AppTarget::Path(PathBuf::from(s))
-        } else {
+        } else if s.contains('.') {
             AppTarget::BundleId(s.to_string())
+        } else {
+            AppTarget::Name(s.to_string())
         }
     }
 }
@@ -152,10 +156,19 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_plain_name_as_bundle_id() {
-        // A plain name without dots, slashes, or .app is treated as bundle ID
+    fn test_parse_plain_name_as_name() {
+        // A plain name without dots, slashes, or .app is treated as app name
         match AppTarget::parse("Calculator") {
-            AppTarget::BundleId(bid) => assert_eq!(bid, "Calculator"),
+            AppTarget::Name(name) => assert_eq!(name, "Calculator"),
+            other => panic!("expected Name, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_dotted_string_as_bundle_id() {
+        // Strings with dots are treated as bundle IDs
+        match AppTarget::parse("com.apple.Finder") {
+            AppTarget::BundleId(bid) => assert_eq!(bid, "com.apple.Finder"),
             other => panic!("expected BundleId, got {other:?}"),
         }
     }

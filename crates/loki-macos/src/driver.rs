@@ -33,6 +33,7 @@ impl MacOSDriver {
     async fn find_window_info(&self, window: &WindowRef) -> LokiResult<WindowInfo> {
         let filter = WindowFilter {
             pid: Some(window.pid),
+            include_unnamed: true,
             ..Default::default()
         };
         let windows = self.list_windows(&filter).await?;
@@ -54,6 +55,9 @@ impl DesktopDriver for MacOSDriver {
         let filtered: Vec<WindowInfo> = all
             .into_iter()
             .filter(|w| {
+                if !filter.include_unnamed && w.title.is_empty() {
+                    return false;
+                }
                 if let Some(ref pat) = filter.title {
                     if !loki_core::query::glob_matches(pat, &w.title) {
                         return false;
@@ -150,7 +154,17 @@ impl DesktopDriver for MacOSDriver {
 
     // ── Input (Phase 2+) ──
 
-    async fn click(&self, x: f64, y: f64, double: bool, right: bool) -> LokiResult<()> {
+    async fn click(
+        &self,
+        x: f64,
+        y: f64,
+        double: bool,
+        right: bool,
+        pid: Option<i32>,
+    ) -> LokiResult<()> {
+        if let Some(p) = pid {
+            app::activate_app(p as u32)?;
+        }
         if double {
             input::double_click_at(x, y)
         } else if right {
@@ -188,6 +202,8 @@ impl DesktopDriver for MacOSDriver {
             "clicking element center"
         );
 
+        // Activate the target app so CGEvent clicks reach the correct window
+        app::activate_app(window.pid)?;
         input::click_at(center_x, center_y)?;
         Ok(element)
     }
