@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="icon.png" width="128" height="128" alt="loki">
+</p>
+
 # loki
 
 Desktop app QA automation for agents. Launch apps, inspect accessibility trees, click elements, type text, take screenshots — all from the command line.
