@@ -4,6 +4,20 @@ use loki_macos::MacOSDriver;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+/// Wrap a bare `--label` pattern with substring globs so that `"Projects"` matches
+/// any text field containing "Projects". If the pattern already contains glob
+/// metacharacters (`*`, `?`, `[`), pass it through unchanged. Empty string is
+/// left as-is — wrapping it to `**` would match everything.
+fn auto_wrap_label(s: &str) -> String {
+    if s.is_empty() {
+        return String::new();
+    }
+    if s.contains('*') || s.contains('?') || s.contains('[') {
+        return s.to_string();
+    }
+    format!("*{}*", s)
+}
+
 #[derive(Parser)]
 #[command(
     name = "loki",
@@ -109,7 +123,7 @@ enum Command {
         role: Option<String>,
         #[arg(long)]
         title: Option<String>,
-        /// Match element where any text field (title, value, description, identifier) globs the pattern
+        /// Match element where any text field (title, value, description, identifier) contains the pattern. Supports glob metacharacters (*, ?, [..]) — without them, matches as substring.
         #[arg(long)]
         label: Option<String>,
         #[arg(long)]
@@ -141,7 +155,7 @@ enum Command {
         role: Option<String>,
         #[arg(long)]
         title: Option<String>,
-        /// Match element where any text field (title, value, description, identifier) globs the pattern
+        /// Match element where any text field (title, value, description, identifier) contains the pattern. Supports glob metacharacters (*, ?, [..]) — without them, matches as substring.
         #[arg(long)]
         label: Option<String>,
         #[arg(long)]
@@ -177,7 +191,7 @@ enum Command {
         role: Option<String>,
         #[arg(long)]
         title: Option<String>,
-        /// Match element where any text field (title, value, description, identifier) globs the pattern
+        /// Match element where any text field (title, value, description, identifier) contains the pattern. Supports glob metacharacters (*, ?, [..]) — without them, matches as substring.
         #[arg(long)]
         label: Option<String>,
         #[arg(long)]
@@ -193,7 +207,7 @@ enum Command {
         role: Option<String>,
         #[arg(long)]
         title: Option<String>,
-        /// Match element where any text field (title, value, description, identifier) globs the pattern
+        /// Match element where any text field (title, value, description, identifier) contains the pattern. Supports glob metacharacters (*, ?, [..]) — without them, matches as substring.
         #[arg(long)]
         label: Option<String>,
         #[arg(long)]
@@ -418,7 +432,7 @@ async fn run(cli: &Cli, driver: &MacOSDriver) -> Result<String, loki_core::LokiE
             let query = ElementQuery {
                 role: role.clone(),
                 title: title.clone(),
-                label: label.clone(),
+                label: label.as_deref().map(auto_wrap_label),
                 identifier: id.clone(),
                 index: *index,
                 ..Default::default()
@@ -470,7 +484,7 @@ async fn run(cli: &Cli, driver: &MacOSDriver) -> Result<String, loki_core::LokiE
             let query = ElementQuery {
                 role: role.clone(),
                 title: title.clone(),
-                label: label.clone(),
+                label: label.as_deref().map(auto_wrap_label),
                 identifier: id.clone(),
                 ..Default::default()
             };
@@ -516,7 +530,7 @@ async fn run(cli: &Cli, driver: &MacOSDriver) -> Result<String, loki_core::LokiE
             let query = ElementQuery {
                 role: role.clone(),
                 title: title.clone(),
-                label: label.clone(),
+                label: label.as_deref().map(auto_wrap_label),
                 identifier: id.clone(),
                 ..Default::default()
             };
@@ -537,7 +551,7 @@ async fn run(cli: &Cli, driver: &MacOSDriver) -> Result<String, loki_core::LokiE
             let query = ElementQuery {
                 role: role.clone(),
                 title: title.clone(),
-                label: label.clone(),
+                label: label.as_deref().map(auto_wrap_label),
                 identifier: id.clone(),
                 ..Default::default()
             };
@@ -618,4 +632,54 @@ async fn find_window_ref(
         window_id: info.window_id,
         pid: info.pid,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_auto_wrap_bare_literal() {
+        assert_eq!(auto_wrap_label("Projects"), "*Projects*");
+    }
+
+    #[test]
+    fn test_auto_wrap_empty_string() {
+        assert_eq!(auto_wrap_label(""), "");
+    }
+
+    #[test]
+    fn test_auto_wrap_star_suffix_passthrough() {
+        assert_eq!(auto_wrap_label("Projects*"), "Projects*");
+    }
+
+    #[test]
+    fn test_auto_wrap_leading_star_passthrough() {
+        assert_eq!(auto_wrap_label("*Projects*"), "*Projects*");
+    }
+
+    #[test]
+    fn test_auto_wrap_question_passthrough() {
+        assert_eq!(auto_wrap_label("Proj?cts"), "Proj?cts");
+    }
+
+    #[test]
+    fn test_auto_wrap_bracket_passthrough() {
+        assert_eq!(auto_wrap_label("[test]"), "[test]");
+    }
+
+    #[test]
+    fn test_auto_wrap_closing_bracket_wraps() {
+        assert_eq!(auto_wrap_label("]"), "*]*");
+    }
+
+    #[test]
+    fn test_auto_wrap_unicode_emoji() {
+        assert_eq!(auto_wrap_label("📋"), "*📋*");
+    }
+
+    #[test]
+    fn test_auto_wrap_whitespace() {
+        assert_eq!(auto_wrap_label("  "), "*  *");
+    }
 }
