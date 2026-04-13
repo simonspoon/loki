@@ -41,6 +41,53 @@ fn test_windows_help() {
         .stdout(predicate::str::contains("List open windows"));
 }
 
+#[test]
+fn test_find_help_shows_label() {
+    loki()
+        .args(["find", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--label"));
+}
+
+#[test]
+fn test_click_element_help_shows_label() {
+    loki()
+        .args(["click-element", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--label"));
+}
+
+#[test]
+fn test_wait_for_help_shows_label() {
+    loki()
+        .args(["wait-for", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--label"));
+}
+
+#[test]
+fn test_wait_gone_help_shows_label() {
+    loki()
+        .args(["wait-gone", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--label"));
+}
+
+#[test]
+fn test_find_label_flag_parses() {
+    // Window 0 doesn't exist, so the command must fail — but it must fail
+    // because of the missing window, NOT because --label is unknown to clap.
+    loki()
+        .args(["find", "0", "--label", "Settings"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--label").not());
+}
+
 // ── Invalid usage ──
 
 #[test]

@@ -109,6 +109,9 @@ enum Command {
         role: Option<String>,
         #[arg(long)]
         title: Option<String>,
+        /// Match element where any text field (title, value, description, identifier) globs the pattern
+        #[arg(long)]
+        label: Option<String>,
         #[arg(long)]
         id: Option<String>,
         #[arg(long)]
@@ -138,6 +141,9 @@ enum Command {
         role: Option<String>,
         #[arg(long)]
         title: Option<String>,
+        /// Match element where any text field (title, value, description, identifier) globs the pattern
+        #[arg(long)]
+        label: Option<String>,
         #[arg(long)]
         id: Option<String>,
     },
@@ -171,6 +177,9 @@ enum Command {
         role: Option<String>,
         #[arg(long)]
         title: Option<String>,
+        /// Match element where any text field (title, value, description, identifier) globs the pattern
+        #[arg(long)]
+        label: Option<String>,
         #[arg(long)]
         id: Option<String>,
         #[arg(long)]
@@ -184,6 +193,9 @@ enum Command {
         role: Option<String>,
         #[arg(long)]
         title: Option<String>,
+        /// Match element where any text field (title, value, description, identifier) globs the pattern
+        #[arg(long)]
+        label: Option<String>,
         #[arg(long)]
         id: Option<String>,
         #[arg(long)]
@@ -398,6 +410,7 @@ async fn run(cli: &Cli, driver: &MacOSDriver) -> Result<String, loki_core::LokiE
             window_id,
             role,
             title,
+            label,
             id,
             index,
         } => {
@@ -405,6 +418,7 @@ async fn run(cli: &Cli, driver: &MacOSDriver) -> Result<String, loki_core::LokiE
             let query = ElementQuery {
                 role: role.clone(),
                 title: title.clone(),
+                label: label.clone(),
                 identifier: id.clone(),
                 index: *index,
                 ..Default::default()
@@ -449,12 +463,14 @@ async fn run(cli: &Cli, driver: &MacOSDriver) -> Result<String, loki_core::LokiE
             window_id,
             role,
             title,
+            label,
             id,
         } => {
             let window = find_window_ref(driver, *window_id).await?;
             let query = ElementQuery {
                 role: role.clone(),
                 title: title.clone(),
+                label: label.clone(),
                 identifier: id.clone(),
                 ..Default::default()
             };
@@ -492,6 +508,7 @@ async fn run(cli: &Cli, driver: &MacOSDriver) -> Result<String, loki_core::LokiE
             window_id,
             role,
             title,
+            label,
             id,
             timeout,
         } => {
@@ -499,6 +516,7 @@ async fn run(cli: &Cli, driver: &MacOSDriver) -> Result<String, loki_core::LokiE
             let query = ElementQuery {
                 role: role.clone(),
                 title: title.clone(),
+                label: label.clone(),
                 identifier: id.clone(),
                 ..Default::default()
             };
@@ -511,6 +529,7 @@ async fn run(cli: &Cli, driver: &MacOSDriver) -> Result<String, loki_core::LokiE
             window_id,
             role,
             title,
+            label,
             id,
             timeout,
         } => {
@@ -518,6 +537,7 @@ async fn run(cli: &Cli, driver: &MacOSDriver) -> Result<String, loki_core::LokiE
             let query = ElementQuery {
                 role: role.clone(),
                 title: title.clone(),
+                label: label.clone(),
                 identifier: id.clone(),
                 ..Default::default()
             };

@@ -8,6 +8,8 @@ use crate::element::AXElement;
 pub struct ElementQuery {
     pub role: Option<String>,
     pub title: Option<String>,
+    #[serde(default)]
+    pub label: Option<String>,
     pub identifier: Option<String>,
     pub value: Option<String>,
     pub description: Option<String>,
@@ -42,6 +44,30 @@ impl ElementQuery {
                     .as_deref()
                     .is_some_and(|i| glob_matches(pat, i));
             if !matches_any_label {
+                return false;
+            }
+        }
+        if let Some(ref pat) = self.label {
+            // Match against ANY text field — title, value, description, or
+            // identifier. This is broader than --title and catches webview
+            // text elements (Tauri/wry, Safari) whose content lives in AXValue.
+            let matches_any_text = element
+                .title
+                .as_deref()
+                .is_some_and(|t| glob_matches(pat, t))
+                || element
+                    .value
+                    .as_deref()
+                    .is_some_and(|v| glob_matches(pat, v))
+                || element
+                    .description
+                    .as_deref()
+                    .is_some_and(|d| glob_matches(pat, d))
+                || element
+                    .identifier
+                    .as_deref()
+                    .is_some_and(|i| glob_matches(pat, i));
+            if !matches_any_text {
                 return false;
             }
         }
@@ -288,6 +314,84 @@ mod tests {
         assert!(!q2.matches(&el));
     }
 
+    // ── label branch tests ──
+
+    #[test]
+    fn test_query_matches_label_on_value_only() {
+        // Element with no title, but AXValue="Settings" — typical webview text
+        let mut el = make_element("AXStaticText", None);
+        el.value = Some("Settings".to_string());
+
+        // label should match via value
+        let q_label = ElementQuery {
+            label: Some("Settings".to_string()),
+            ..Default::default()
+        };
+        assert!(q_label.matches(&el));
+
+        // title should NOT match — title branch stays strict
+        // (title/description/identifier only, not value)
+        let q_title = ElementQuery {
+            title: Some("Settings".to_string()),
+            ..Default::default()
+        };
+        assert!(!q_title.matches(&el));
+    }
+
+    #[test]
+    fn test_query_matches_label_on_title() {
+        let el = make_element("AXStaticText", Some("Settings"));
+        let q = ElementQuery {
+            label: Some("Settings".to_string()),
+            ..Default::default()
+        };
+        assert!(q.matches(&el));
+    }
+
+    #[test]
+    fn test_query_matches_label_on_description() {
+        let mut el = make_element("AXStaticText", None);
+        el.description = Some("Settings".to_string());
+        let q = ElementQuery {
+            label: Some("Settings".to_string()),
+            ..Default::default()
+        };
+        assert!(q.matches(&el));
+    }
+
+    #[test]
+    fn test_query_matches_label_on_identifier() {
+        let mut el = make_element("AXStaticText", None);
+        el.identifier = Some("Settings".to_string());
+        let q = ElementQuery {
+            label: Some("Settings".to_string()),
+            ..Default::default()
+        };
+        assert!(q.matches(&el));
+    }
+
+    #[test]
+    fn test_query_matches_label_glob_wildcard() {
+        let mut el = make_element("AXStaticText", None);
+        el.value = Some("ordis-dev".to_string());
+        let q = ElementQuery {
+            label: Some("ordis*".to_string()),
+            ..Default::default()
+        };
+        assert!(q.matches(&el));
+    }
+
+    #[test]
+    fn test_query_matches_label_none_of_four_fields() {
+        // All four text fields are None — label match must fail
+        let el = make_element("AXGroup", None);
+        let q = ElementQuery {
+            label: Some("anything".to_string()),
+            ..Default::default()
+        };
+        assert!(!q.matches(&el));
+    }
+
     // ── search_tree tests ──
 
     fn make_tree() -> AXElement {
@@ -372,5 +476,36 @@ mod tests {
         };
         let results2 = search_tree(&tree, &q2);
         assert_eq!(results2.len(), 1);
+    }
+
+    #[test]
+    fn test_search_tree_by_label_value() {
+        // Webview-style tree: AXStaticText with value but no title, like what
+        // Tauri/wry or Safari webviews produce.
+        let mut text_el = make_element("AXStaticText", None);
+        text_el.value = Some("ordis".to_string());
+        text_el.path = vec![0];
+
+        let tree = AXElement {
+            children: vec![text_el],
+            ..make_element("AXWindow", Some("Webview"))
+        };
+
+        // Find via --label: should hit via value field
+        let q_label = ElementQuery {
+            label: Some("ordis".to_string()),
+            ..Default::default()
+        };
+        let results = search_tree(&tree, &q_label);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].value.as_deref(), Some("ordis"));
+
+        // Regression gate: --title must NOT find it (title branch stays strict)
+        let q_title = ElementQuery {
+            title: Some("ordis".to_string()),
+            ..Default::default()
+        };
+        let results_title = search_tree(&tree, &q_title);
+        assert_eq!(results_title.len(), 0);
     }
 }
