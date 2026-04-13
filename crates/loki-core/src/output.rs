@@ -175,7 +175,12 @@ fn truncate(s: &str, max: usize) -> String {
     if s.len() <= max {
         s.to_string()
     } else {
-        format!("{}...", &s[..max.saturating_sub(3)])
+        let target = max.saturating_sub(3);
+        let end = (0..=target)
+            .rev()
+            .find(|i| s.is_char_boundary(*i))
+            .unwrap_or(0);
+        format!("{}...", &s[..end])
     }
 }
 
@@ -339,5 +344,106 @@ mod tests {
         assert_eq!(flat[2].role, "AXButton");
         // Flattened elements should have no children
         assert!(flat[0].children.is_empty());
+    }
+
+    // ── truncate tests ──
+
+    #[test]
+    fn test_truncate_ascii_unchanged() {
+        assert_eq!(super::truncate("hello", 40), "hello");
+    }
+
+    #[test]
+    fn test_truncate_ascii_long() {
+        let input = "a".repeat(42);
+        let result = super::truncate(&input, 40);
+        assert_eq!(result, "a".repeat(37) + "...");
+        assert_eq!(result.len(), 40);
+    }
+
+    #[test]
+    fn test_truncate_shorter_than_max() {
+        assert_eq!(super::truncate("hi", 40), "hi");
+    }
+
+    #[test]
+    fn test_truncate_exactly_max() {
+        let input = "a".repeat(40);
+        assert_eq!(super::truncate(&input, 40), input);
+    }
+
+    #[test]
+    fn test_truncate_one_byte_over() {
+        let input = "a".repeat(41);
+        assert_eq!(super::truncate(&input, 40), "a".repeat(37) + "...");
+    }
+
+    #[test]
+    fn test_truncate_empty() {
+        assert_eq!(super::truncate("", 40), "");
+    }
+
+    #[test]
+    fn test_truncate_em_dash_at_boundary() {
+        // 36 ASCII 'a' + "—" (3-byte em dash) + "xy" = 41 bytes. max=40.
+        let input = format!("{}—xy", "a".repeat(36));
+        assert_eq!(input.len(), 41);
+        let result = super::truncate(&input, 40);
+        assert!(result.ends_with("..."));
+        assert!(result.len() <= 40);
+        // Must be valid UTF-8 (would panic already if not, but assert explicitly).
+        assert!(std::str::from_utf8(result.as_bytes()).is_ok());
+        // Must NOT contain a partial em-dash: either the full "—" or none of it.
+        // If any byte of "—" (0xE2 0x80 0x94) is present, all three must be.
+        let em_bytes = "—".as_bytes();
+        let has_any = result
+            .as_bytes()
+            .windows(1)
+            .any(|w| em_bytes.contains(&w[0]));
+        if has_any {
+            assert!(result.contains("—"));
+        }
+    }
+
+    #[test]
+    fn test_truncate_emoji_4byte_at_boundary() {
+        // 35 ASCII 'a' + "🎉" (4-byte) + "bc" = 41 bytes. max=40.
+        let input = format!("{}🎉bc", "a".repeat(35));
+        assert_eq!(input.len(), 41);
+        let result = super::truncate(&input, 40);
+        assert!(result.ends_with("..."));
+        assert!(result.len() <= 40);
+        assert!(std::str::from_utf8(result.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn test_truncate_cjk_at_boundary() {
+        // 36 ASCII 'a' + "日本語" (3×3 bytes) = 45 bytes. max=40.
+        let input = format!("{}日本語", "a".repeat(36));
+        assert_eq!(input.len(), 45);
+        let result = super::truncate(&input, 40);
+        assert!(result.ends_with("..."));
+        assert!(result.len() <= 40);
+        assert!(std::str::from_utf8(result.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn test_truncate_all_multibyte_no_regression() {
+        // 20 × "日" (3 bytes each) = 60 bytes. max=40.
+        let input = "日".repeat(20);
+        assert_eq!(input.len(), 60);
+        let result = super::truncate(&input, 40);
+        assert!(result.ends_with("..."));
+        assert!(result.len() <= 40);
+        assert!(std::str::from_utf8(result.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn test_truncate_panic_regression_real_title() {
+        let input = "Title with — em dash and 🎉 emoji padding pad pad";
+        let result = super::truncate(input, 40);
+        assert!(result.ends_with("..."));
+        assert!(result.len() <= 40);
+        assert!(std::str::from_utf8(result.as_bytes()).is_ok());
     }
 }
