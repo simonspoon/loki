@@ -30,6 +30,7 @@ loki tree <WINDOW_ID> --depth 3
 
 # Find and click elements
 loki find <WINDOW_ID> --role AXButton --title "7"
+loki find <WINDOW_ID> --label "Projects"          # Match any text field (great for webviews)
 loki click-element <WINDOW_ID> --title "7"
 loki click-element <WINDOW_ID> --title "Add"
 loki click-element <WINDOW_ID> --title "3"
@@ -56,7 +57,7 @@ loki kill com.apple.Calculator
 | `app-info` | Get info about a running app (by name, bundle ID, or --pid) |
 | `windows` | List open windows (filter by title/bundle-id/pid) |
 | `tree` | Dump accessibility tree for a window |
-| `find` | Find elements by role, title, identifier |
+| `find` | Find elements by role, title, label, identifier |
 | `click` | Click at screen coordinates (use --pid to target an app) |
 | `click-element` | Click a UI element by query |
 | `type` | Type text (use --window to target an app) |

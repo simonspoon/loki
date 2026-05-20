@@ -102,11 +102,17 @@ loki find <WINDOW_ID> --role AXButton
 loki find <WINDOW_ID> --title "Save"
 loki find <WINDOW_ID> --role AXTextField --id "username"
 loki find <WINDOW_ID> --role AXButton --title "OK" --index 0
+loki find <WINDOW_ID> --label "Projects"          # Match webview text by any text field
 ```
 
 Filters:
 - `--role` matches the accessibility role (AXButton, AXTextField, etc.)
-- `--title` matches the element title/label
+- `--title` matches the element title/label (strict — title only)
+- `--label` matches any text field (title, value, description, identifier).
+  Use this to find webview text elements (Tauri/wry, Safari) whose content
+  lives in `AXValue` rather than `AXTitle`. Bare patterns are auto-wrapped as
+  substring globs (`"Projects"` becomes `*Projects*`); patterns containing
+  `*`, `?`, or `[` are used verbatim.
 - `--id` matches the accessibility identifier
 - `--index` selects the Nth match (0-based)
 
@@ -133,7 +139,12 @@ Click the center of a matched element:
 loki click-element <WINDOW_ID> --title "Save"
 loki click-element <WINDOW_ID> --role AXButton --title "OK"
 loki click-element <WINDOW_ID> --id "submit-button"
+loki click-element <WINDOW_ID> --label "Submit"   # Match any text field (webview-friendly)
 ```
+
+The `--label` flag (also supported by `find`, `wait-for`, `wait-gone`) matches
+against title, value, description, and identifier. See [Find elements](#find-elements)
+for matching rules.
 
 ### Type text
 
@@ -183,6 +194,7 @@ Wait for a UI element to appear:
 ```bash
 loki wait-for <WINDOW_ID> --role AXButton --title "Done"
 loki wait-for <WINDOW_ID> --title "Loading..." --timeout 10000
+loki wait-for <WINDOW_ID> --label "Ready" --timeout 10000  # Webview-friendly
 ```
 
 ### Wait for element to disappear
@@ -190,6 +202,7 @@ loki wait-for <WINDOW_ID> --title "Loading..." --timeout 10000
 ```bash
 loki wait-gone <WINDOW_ID> --title "Loading..."
 loki wait-gone <WINDOW_ID> --role AXProgressIndicator --timeout 15000
+loki wait-gone <WINDOW_ID> --label "Spinner"
 ```
 
 ### Wait for window

@@ -64,7 +64,7 @@ The `DesktopDriver` trait is the extension point. To add Linux support, you woul
 2. Add a feature flag or compile-time cfg to `loki-cli` to select the backend
 3. Core types and output formatting remain shared
 
-This is not yet implemented — v0.1.0 is macOS-only.
+This is not yet implemented — current releases are macOS-only.
 
 ## Async design
 
@@ -104,3 +104,27 @@ Every command supports `--format text` (default, human-readable) and
 `--format json` (structured, for piping). The `LOKI_FORMAT` env var sets the
 default. Formatting functions live in `loki-core::output` so they are shared
 across any future frontend.
+
+### Pitfall: byte-slicing UTF-8 strings
+
+`output::truncate` must not slice a `&str` at an arbitrary byte index. Rust
+panics on `&s[..n]` if `n` falls inside a multi-byte codepoint (em dashes,
+emoji, CJK). Walk back to the nearest char boundary with
+`s.is_char_boundary(i)` before slicing. Any helper that trims user-supplied
+text — window titles, AX values — must do the same. See tests in
+`loki-core/src/output.rs` for the regression cases.
+
+### Querying: `--label` vs `--title`
+
+`ElementQuery` has separate `title` and `label` fields with intentionally
+different match semantics:
+
+- `title` matches `AXTitle` only (strict)
+- `label` matches `AXTitle`, `AXValue`, `AXDescription`, or `AXIdentifier`
+  (broad — needed for webview text in Tauri/wry and Safari, where text lives
+  in `AXValue` rather than `AXTitle`)
+
+The CLI auto-wraps bare `--label` patterns as substring globs (`Projects` →
+`*Projects*`) but leaves patterns containing `*`, `?`, or `[` untouched. Keep
+the `title` branch strict — broadening it would silently change long-standing
+match behavior for existing scripts.
