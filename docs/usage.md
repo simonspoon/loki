@@ -168,6 +168,68 @@ loki key cmd+s --window <WINDOW_ID>       # Target specific window's app
 
 Modifier names: `cmd`, `shift`, `ctrl`, `alt`/`option`.
 
+## Menu bar
+
+An app's menu bar hangs off the *application* element, not any window, so
+`tree`/`find <WINDOW_ID>` can never see it — and a coordinate `click` on an open
+menu is swallowed by its modal event loop. These two commands are the only way
+in. Both target the frontmost app unless `--pid`, `--bundle-id`, or `--window`
+is given, and both split the path on `>` (override with `--separator`).
+
+Path levels match exact-first, then case-insensitively / by substring, ignoring
+a trailing ellipsis — so `"Save As"` finds `"Save As…"`. An unmatched level
+errors with the available titles at that level.
+
+### Press an item
+
+```bash
+loki menu "File>New" --bundle-id com.apple.TextEdit
+loki menu "Format>Font>Bold" --pid <PID>
+loki menu "Edit>Select All"                # frontmost app
+loki menu "File/New" --separator /
+```
+
+### Read item state
+
+`menu-state` observes without invoking anything — it prints the item the path
+names plus its immediate children, each with its checkmark, enabled state, and
+whether it opens a submenu. Separators are omitted.
+
+```bash
+loki menu-state "View>Theme"
+```
+
+```
+Theme (submenu)
+  ✓ Light
+    Dark
+    System (disabled)
+```
+
+JSON adds the raw `mark` character, so a radio-style bullet (`•`) stays
+distinguishable from a checkmark (`✓`):
+
+```bash
+loki -f json menu-state "View>Theme"
+```
+
+```json
+{
+  "title": "Theme",
+  "marked": false,
+  "enabled": true,
+  "has_submenu": true,
+  "children": [
+    { "title": "Light", "marked": true, "mark": "✓", "enabled": true, "has_submenu": false },
+    { "title": "Dark", "marked": false, "enabled": true, "has_submenu": false }
+  ]
+}
+```
+
+Reading a leaf is safe — `menu-state "File>New"` reports the item and creates
+no document. Only a container that owns a submenu is ever opened (to populate a
+lazily-built one), and it is closed again before the command returns.
+
 ## Screenshots
 
 ```bash
@@ -278,5 +340,20 @@ if [ "$(echo "$ELEMENTS" | jq length)" -gt 0 ]; then
   echo "PASS: Success message visible"
 else
   echo "FAIL: Success message not found"
+fi
+```
+
+### Verify a radio-style menu group
+
+Assert that exactly one item in a submenu is checked, and that it's the right
+one — the menu bar is invisible to `find`, so `menu-state` is the only source:
+
+```bash
+MARKED=$(loki -f json menu-state "View>Theme" --bundle-id com.example.app \
+  | jq -r '[.children[] | select(.marked) | .title] | join(",")')
+if [ "$MARKED" = "Dark" ]; then
+  echo "PASS: Dark is the only checked theme"
+else
+  echo "FAIL: expected exactly 'Dark', got '$MARKED'"
 fi
 ```

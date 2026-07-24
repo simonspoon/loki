@@ -207,6 +207,30 @@ enum Command {
         separator: String,
     },
 
+    /// Read an app menu-bar item's state without pressing it, e.g. "View>Theme"
+    ///
+    /// Prints the item the path names plus its immediate children, each with
+    /// its checkmark, enabled state, and whether it opens a submenu — enough to
+    /// assert "exactly one item is checked, and it's the right one". The menu
+    /// bar is invisible to `find <WID>`, so this is the only way to read it.
+    /// Targets the frontmost app unless --pid, --bundle-id, or --window is given.
+    MenuState {
+        /// Menu path, levels separated by the separator (default '>'), e.g. "View>Theme"
+        path: String,
+        /// Target process ID
+        #[arg(long)]
+        pid: Option<u32>,
+        /// Target bundle ID (e.g. com.apple.TextEdit)
+        #[arg(long)]
+        bundle_id: Option<String>,
+        /// Target window ID (resolves the owning PID)
+        #[arg(long)]
+        window: Option<u32>,
+        /// Path level separator
+        #[arg(long, default_value = ">")]
+        separator: String,
+    },
+
     /// Wait for an element to appear
     WaitFor {
         window_id: u32,
@@ -548,35 +572,23 @@ async fn run(cli: &Cli, driver: &MacOSDriver) -> Result<String, loki_core::LokiE
             window,
             separator,
         } => {
-            // Resolve the target PID: --pid, then --window's owner, then
-            // --bundle-id, then fall back to the frontmost app.
-            let target_pid: i32 = if let Some(p) = pid {
-                *p as i32
-            } else if let Some(wid) = window {
-                find_window_ref(driver, *wid).await?.pid as i32
-            } else if let Some(bid) = bundle_id {
-                driver.app_info(bid).await?.pid as i32
-            } else {
-                loki_macos::app::frontmost_pid().ok_or_else(|| {
-                    loki_core::LokiError::AppNotFound(
-                        "no frontmost app — specify --pid, --bundle-id, or --window".into(),
-                    )
-                })? as i32
-            };
-
-            let segments: Vec<String> = path
-                .split(separator.as_str())
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect();
-            if segments.is_empty() {
-                return Err(loki_core::LokiError::InputError(format!(
-                    "empty menu path '{path}'"
-                )));
-            }
-
+            let target_pid = resolve_menu_pid(driver, *pid, *window, bundle_id.as_deref()).await?;
+            let segments = split_menu_path(path, separator)?;
             let element = driver.press_menu(target_pid, &segments).await?;
             Ok(loki_core::output::format_elements(&[element], cli.format))
+        }
+
+        Command::MenuState {
+            path,
+            pid,
+            bundle_id,
+            window,
+            separator,
+        } => {
+            let target_pid = resolve_menu_pid(driver, *pid, *window, bundle_id.as_deref()).await?;
+            let segments = split_menu_path(path, separator)?;
+            let state = driver.menu_state(target_pid, &segments).await?;
+            Ok(loki_core::output::format_menu_state(&state, cli.format))
         }
 
         Command::WaitFor {
@@ -656,6 +668,45 @@ async fn run(cli: &Cli, driver: &MacOSDriver) -> Result<String, loki_core::LokiE
     }
 }
 
+/// Resolve the app whose menu bar to walk: --pid, then --window's owner, then
+/// --bundle-id, then the frontmost app.
+async fn resolve_menu_pid(
+    driver: &MacOSDriver,
+    pid: Option<u32>,
+    window: Option<u32>,
+    bundle_id: Option<&str>,
+) -> Result<i32, loki_core::LokiError> {
+    if let Some(p) = pid {
+        return Ok(p as i32);
+    }
+    if let Some(wid) = window {
+        return Ok(find_window_ref(driver, wid).await?.pid as i32);
+    }
+    if let Some(bid) = bundle_id {
+        return Ok(driver.app_info(bid).await?.pid as i32);
+    }
+    Ok(loki_macos::app::frontmost_pid().ok_or_else(|| {
+        loki_core::LokiError::AppNotFound(
+            "no frontmost app — specify --pid, --bundle-id, or --window".into(),
+        )
+    })? as i32)
+}
+
+/// Split a menu path like `"View>Theme"` into its levels.
+fn split_menu_path(path: &str, separator: &str) -> Result<Vec<String>, loki_core::LokiError> {
+    let segments: Vec<String> = path
+        .split(separator)
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if segments.is_empty() {
+        return Err(loki_core::LokiError::InputError(format!(
+            "empty menu path '{path}'"
+        )));
+    }
+    Ok(segments)
+}
+
 /// Resolve a target PID from --pid or --window flags.
 /// Returns Some(pid) if either is specified, None otherwise (uses focused app).
 async fn resolve_target_pid(
@@ -698,6 +749,36 @@ async fn find_window_ref(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_split_menu_path_levels() {
+        assert_eq!(
+            split_menu_path("View>Theme", ">").unwrap(),
+            ["View", "Theme"]
+        );
+    }
+
+    #[test]
+    fn test_split_menu_path_trims_spaces_around_separator() {
+        assert_eq!(
+            split_menu_path("View > Theme", ">").unwrap(),
+            ["View", "Theme"]
+        );
+    }
+
+    #[test]
+    fn test_split_menu_path_custom_separator() {
+        assert_eq!(
+            split_menu_path("View/Theme", "/").unwrap(),
+            ["View", "Theme"]
+        );
+    }
+
+    #[test]
+    fn test_split_menu_path_rejects_empty() {
+        assert!(split_menu_path("", ">").is_err());
+        assert!(split_menu_path(">>", ">").is_err());
+    }
 
     #[test]
     fn test_auto_wrap_bare_literal() {

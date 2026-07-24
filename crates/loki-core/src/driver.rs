@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 
-use crate::element::{AXElement, AppInfo, WindowInfo, WindowRef};
+use crate::element::{AXElement, AppInfo, MenuItemState, WindowInfo, WindowRef};
 use crate::error::LokiResult;
 use crate::query::{ElementQuery, WindowFilter};
 
@@ -70,6 +70,11 @@ pub trait DesktopDriver: Send + Sync {
     /// Navigate the app's menu bar (identified by `pid`) and press the item named
     /// by `path` (e.g. `["File", "Open File…"]`). Returns the pressed item.
     async fn press_menu(&self, pid: i32, path: &[String]) -> LokiResult<AXElement>;
+
+    /// Read the state of the menu item `path` names, plus its immediate
+    /// children — title, mark (checkmark/bullet), enabled, submenu-or-not.
+    /// Observes without invoking the item.
+    async fn menu_state(&self, pid: i32, path: &[String]) -> LokiResult<MenuItemState>;
 
     // ── Screenshot ──
 

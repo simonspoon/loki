@@ -4,7 +4,7 @@
 
 use core_foundation::base::{CFGetTypeID, CFTypeRef, TCFType};
 use core_foundation::string::{CFString, CFStringGetTypeID, CFStringRef};
-use loki_core::{AXElement, ElementFrame, LokiError, LokiResult};
+use loki_core::{AXElement, ElementFrame, LokiError, LokiResult, MenuItemState};
 use std::ffi::c_void;
 use tracing::trace;
 
@@ -162,6 +162,8 @@ pub fn walk_tree(
 // ── Menu bar navigation ──
 
 const AX_PRESS_ACTION: &str = "AXPress";
+const AX_CANCEL_ACTION: &str = "AXCancel";
+const AX_MENU_ITEM_MARK_CHAR: &str = "AXMenuItemMarkChar";
 
 /// Navigate an application's menu bar and press the item named by `path`.
 ///
@@ -173,10 +175,70 @@ const AX_PRESS_ACTION: &str = "AXPress";
 ///
 /// AX exposes the whole menu tree even while closed, so we walk it directly and
 /// fire `AXPress` on the leaf — this bypasses the modal NSMenu event loop that
-/// swallows synthetic `CGEvent` clicks. If a level's children aren't populated
-/// yet (some apps build submenus lazily), we press the parent to open it and
-/// re-read once.
+/// swallows synthetic `CGEvent` clicks.
 pub fn press_menu_path(pid: i32, path: &[String]) -> LokiResult<AXElement> {
+    let mut opened = Vec::new();
+    let matched = resolve_menu_path(pid, path, &mut opened)?;
+    // The leaf press dismisses whatever the walk had to open, so `opened` needs
+    // no cleanup here — unlike the read-only `menu_state_path`.
+    perform_press(matched)?;
+    walk_tree(matched, Some(0), 0, vec![])
+}
+
+/// Read the state of the menu item `path` names, plus its immediate children.
+///
+/// This is the read counterpart of [`press_menu_path`]: it answers "which item
+/// in this submenu is checked, and is it enabled?" without invoking anything.
+/// The tree is normally enumerable while closed, so nothing on screen changes;
+/// a lazily-built submenu is opened once and cancelled again before returning.
+pub fn menu_state_path(pid: i32, path: &[String]) -> LokiResult<MenuItemState> {
+    let mut opened = Vec::new();
+    let result = read_menu_state(pid, path, &mut opened);
+
+    // Leave the UI as we found it — innermost menu first. This runs on the
+    // error path too: a bad path typically fails at a *later* level than the
+    // one already opened, and bailing out with `?` here would strand that menu
+    // on screen to swallow the next command's input.
+    for container in opened.into_iter().rev() {
+        cancel_menu(container);
+    }
+
+    result
+}
+
+/// The body of [`menu_state_path`], split out so its caller can cancel any menu
+/// this opened whether it succeeds or fails.
+fn read_menu_state(
+    pid: i32,
+    path: &[String],
+    opened: &mut Vec<AXUIElementRef>,
+) -> LokiResult<MenuItemState> {
+    let matched = resolve_menu_path(pid, path, opened)?;
+
+    let children = populated_menu_items(matched, opened)
+        .into_iter()
+        .map(read_menu_item)
+        // Separators are title-less `AXMenuItem`s; drop them so a caller can
+        // count marked entries without filtering noise.
+        .filter(|item| !item.title.is_empty())
+        .collect();
+
+    Ok(MenuItemState {
+        children,
+        ..read_menu_item(matched)
+    })
+}
+
+/// Walk `pid`'s menu bar and return the element `path` names.
+///
+/// Shared by [`press_menu_path`] and [`menu_state_path`]. Any container opened
+/// to populate a lazily-built submenu is pushed onto `opened`, so a read-only
+/// caller can close it again.
+fn resolve_menu_path(
+    pid: i32,
+    path: &[String],
+    opened: &mut Vec<AXUIElementRef>,
+) -> LokiResult<AXUIElementRef> {
     if path.is_empty() {
         return Err(LokiError::InputError("empty menu path".into()));
     }
@@ -188,22 +250,15 @@ pub fn press_menu_path(pid: i32, path: &[String]) -> LokiResult<AXElement> {
         )));
     }
 
-    let menu_bar = get_element_attribute(app, "AXMenuBar").ok_or_else(|| {
-        LokiError::ElementNotFound(format!("app (PID {pid}) has no menu bar"))
-    })?;
+    let menu_bar = get_element_attribute(app, "AXMenuBar")
+        .ok_or_else(|| LokiError::ElementNotFound(format!("app (PID {pid}) has no menu bar")))?;
 
     // Walk down the path, one segment per level. `parent` is the container we
     // enumerate items from: the menu bar itself, then each matched item.
     let mut parent = menu_bar;
     let last = path.len() - 1;
     for (idx, segment) in path.iter().enumerate() {
-        let mut items = menu_items(parent);
-        if items.is_empty() {
-            // Lazily-built submenu: open the parent, wait briefly, re-read.
-            let _ = perform_press(parent);
-            std::thread::sleep(std::time::Duration::from_millis(80));
-            items = menu_items(parent);
-        }
+        let items = populated_menu_items(parent, opened);
 
         // Prefer an exact (normalized) title match; only fall back to fuzzy
         // substring/glob if nothing matches exactly. Without this, "Edit"
@@ -231,13 +286,71 @@ pub fn press_menu_path(pid: i32, path: &[String]) -> LokiResult<AXElement> {
             })?;
 
         if idx == last {
-            perform_press(matched)?;
-            return walk_tree(matched, Some(0), 0, vec![]);
+            return Ok(matched);
         }
         parent = matched;
     }
 
     unreachable!("loop returns on the last segment")
+}
+
+/// Read one menu item's own state. Children are left empty — only the item a
+/// query resolves to gets them filled in.
+fn read_menu_item(item: AXUIElementRef) -> MenuItemState {
+    // An unmarked item reports the attribute as absent on some apps and as an
+    // empty string on others; treat both as unmarked.
+    let mark = get_string_attribute(item, AX_MENU_ITEM_MARK_CHAR).filter(|s| !s.is_empty());
+    MenuItemState {
+        title: get_string_attribute(item, "AXTitle").unwrap_or_default(),
+        marked: mark.is_some(),
+        mark,
+        enabled: get_bool_attribute(item, "AXEnabled"),
+        has_submenu: owns_submenu(item),
+        children: Vec::new(),
+    }
+}
+
+/// Enumerate `container`'s menu items, opening it once if its submenu hasn't
+/// been built yet (some apps populate lazily).
+///
+/// Only presses a container that actually owns an `AXMenu` child. Pressing a
+/// *leaf* would invoke its command — `menu-state "File>New"` must not create a
+/// document — so a leaf that reads empty simply stays empty.
+fn populated_menu_items(
+    container: AXUIElementRef,
+    opened: &mut Vec<AXUIElementRef>,
+) -> Vec<AXUIElementRef> {
+    let items = menu_items(container);
+    if !items.is_empty() || !owns_submenu(container) {
+        return items;
+    }
+
+    let _ = perform_press(container);
+    std::thread::sleep(std::time::Duration::from_millis(80));
+    let items = menu_items(container);
+    if !items.is_empty() {
+        opened.push(container);
+    }
+    items
+}
+
+/// True when `item` owns an `AXMenu` child — it opens a submenu rather than
+/// firing a command. This is what makes it safe to press for populating.
+fn owns_submenu(item: AXUIElementRef) -> bool {
+    get_children(item)
+        .into_iter()
+        .any(|child| get_string_attribute(child, "AXRole").as_deref() == Some("AXMenu"))
+}
+
+/// Best-effort dismiss of a menu we had to open. `AXCancel` lives on the
+/// `AXMenu` itself on most apps and on the owning item on others, so try both.
+fn cancel_menu(container: AXUIElementRef) {
+    for child in get_children(container) {
+        if get_string_attribute(child, "AXRole").as_deref() == Some("AXMenu") {
+            let _ = perform_action(child, AX_CANCEL_ACTION);
+        }
+    }
+    let _ = perform_action(container, AX_CANCEL_ACTION);
 }
 
 /// Enumerate the selectable menu items directly under `container`.
@@ -291,14 +404,19 @@ fn menu_title_matches(pattern: &str, title: &str) -> bool {
 
 /// Fire the `AXPress` action on an AX element.
 fn perform_press(element: AXUIElementRef) -> LokiResult<()> {
+    perform_action(element, AX_PRESS_ACTION)
+}
+
+/// Fire a named accessibility action on an AX element.
+fn perform_action(element: AXUIElementRef, action_name: &str) -> LokiResult<()> {
     unsafe {
-        let action = CFString::new(AX_PRESS_ACTION);
+        let action = CFString::new(action_name);
         let err = AXUIElementPerformAction(element, action.as_concrete_TypeRef());
         match err {
             AX_ERROR_SUCCESS => Ok(()),
             AX_ERROR_API_DISABLED => Err(LokiError::PermissionDenied),
             _ => Err(LokiError::Platform(format!(
-                "AXPress failed (AXError {err})"
+                "{action_name} failed (AXError {err})"
             ))),
         }
     }

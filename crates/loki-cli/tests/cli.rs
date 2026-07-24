@@ -91,6 +91,42 @@ fn test_find_label_flag_parses() {
 // ── Invalid usage ──
 
 #[test]
+fn test_menu_state_help() {
+    loki()
+        .args(["menu-state", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("without pressing it"))
+        .stdout(predicate::str::contains("--bundle-id"))
+        .stdout(predicate::str::contains("--separator"));
+}
+
+#[test]
+fn test_menu_state_listed_in_help() {
+    loki()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("menu-state"));
+}
+
+#[test]
+fn test_menu_state_missing_path() {
+    loki().arg("menu-state").assert().failure();
+}
+
+#[test]
+fn test_menu_state_empty_path_rejected() {
+    // A path of only separators has no levels to walk — reject it rather than
+    // silently targeting the menu bar root.
+    loki()
+        .args(["menu-state", ">>", "--pid", "1"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("empty menu path"));
+}
+
+#[test]
 fn test_no_subcommand() {
     loki()
         .assert()

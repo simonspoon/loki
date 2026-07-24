@@ -46,6 +46,11 @@ loki menu "File>New" --bundle-id com.apple.TextEdit
 loki menu "Format>Font>Bold" --pid <PID>
 loki menu "Edit>Select All"                       # no target = frontmost app
 
+# Read menu state without pressing anything (checkmark / enabled / submenu).
+# The menu bar hangs off the app, so `find <WID>` can never see it.
+loki menu-state "View>Theme" --bundle-id com.example.app
+loki -f json menu-state "View>Theme" | jq '[.children[] | select(.marked) | .title]'
+
 # Screenshot and verify
 loki screenshot --window <WINDOW_ID> --output result.png
 loki wait-for <WINDOW_ID> --role AXButton --title "Equals" --timeout 3000
@@ -69,6 +74,7 @@ loki kill com.apple.Calculator
 | `type` | Type text (use --window to target an app) |
 | `key` | Send key combo, e.g. `cmd+s`, `ctrl+shift+a` |
 | `menu` | Open and press an app menu-bar item by path, e.g. `"File>Open File…"` |
+| `menu-state` | Read a menu item + its children (checkmark, enabled, submenu) without pressing |
 | `screenshot` | Capture window (by ID or title) or screen as PNG |
 | `wait-for` | Wait for an element to appear |
 | `wait-gone` | Wait for an element to disappear |

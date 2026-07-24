@@ -128,3 +128,20 @@ The CLI auto-wraps bare `--label` patterns as substring globs (`Projects` →
 `*Projects*`) but leaves patterns containing `*`, `?`, or `[` untouched. Keep
 the `title` branch strict — broadening it would silently change long-standing
 match behavior for existing scripts.
+
+### Pitfall: never `AXPress` a menu item to probe it
+
+`menu` and `menu-state` share one walk (`accessibility::resolve_menu_path`).
+Some apps build a submenu's children only when it is opened, so the walk presses
+a container that reads empty and re-reads it. That press is safe on a *submenu*
+and catastrophic on a *leaf* — `AXPress` on `File>New` runs the command, so a
+read-only `menu-state` would create a document as a side effect of describing
+one.
+
+The guard is `owns_submenu()`: only an item with an `AXMenu` child is ever
+pressed to populate. A leaf that reads empty stays empty. `menu_state_path` also
+fires `AXCancel` on anything it had to open, so observing a menu never leaves one
+hanging open to swallow the next command's input.
+
+Note the asymmetry: `press_menu_path` needs no such cleanup, because pressing
+the leaf dismisses the whole chain on its way out.

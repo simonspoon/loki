@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use loki_core::{
     AXElement, AppInfo, AppTarget, DesktopDriver, ElementQuery, LokiError, LokiResult,
-    WindowFilter, WindowInfo, WindowRef,
+    MenuItemState, WindowFilter, WindowInfo, WindowRef,
 };
 use tokio::time::{sleep, Duration, Instant};
 use tracing::debug;
@@ -230,6 +230,16 @@ impl DesktopDriver for MacOSDriver {
         // so bring the target app frontmost before walking its menu bar.
         app::activate_app(pid as u32)?;
         accessibility::press_menu_path(pid, path)
+    }
+
+    async fn menu_state(&self, pid: i32, path: &[String]) -> LokiResult<MenuItemState> {
+        if !self.has_accessibility_permission() {
+            return Err(LokiError::PermissionDenied);
+        }
+        // Same lazy-build reason as press_menu: an inactive app may not have
+        // populated its menus yet, so a read would see an empty tree.
+        app::activate_app(pid as u32)?;
+        accessibility::menu_state_path(pid, path)
     }
 
     // ── Screenshot (Phase 2) ──
