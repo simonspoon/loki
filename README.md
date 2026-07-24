@@ -40,6 +40,12 @@ loki click-element <WINDOW_ID> --title "Equals"
 loki type "Hello" --window <WINDOW_ID>
 loki key cmd+a --window <WINDOW_ID>
 
+# Drive the app menu bar (opens and presses the item — reaches menus that
+# live off the app, not any window, and that swallow coordinate clicks)
+loki menu "File>New" --bundle-id com.apple.TextEdit
+loki menu "Format>Font>Bold" --pid <PID>
+loki menu "Edit>Select All"                       # no target = frontmost app
+
 # Screenshot and verify
 loki screenshot --window <WINDOW_ID> --output result.png
 loki wait-for <WINDOW_ID> --role AXButton --title "Equals" --timeout 3000
@@ -62,6 +68,7 @@ loki kill com.apple.Calculator
 | `click-element` | Click a UI element by query |
 | `type` | Type text (use --window to target an app) |
 | `key` | Send key combo, e.g. `cmd+s`, `ctrl+shift+a` |
+| `menu` | Open and press an app menu-bar item by path, e.g. `"File>Open File…"` |
 | `screenshot` | Capture window (by ID or title) or screen as PNG |
 | `wait-for` | Wait for an element to appear |
 | `wait-gone` | Wait for an element to disappear |

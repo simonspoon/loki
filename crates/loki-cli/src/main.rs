@@ -184,6 +184,29 @@ enum Command {
         window: Option<u32>,
     },
 
+    /// Open and press an app menu-bar item by path, e.g. "File>Open File…"
+    ///
+    /// The menu bar hangs off the application (not any window), so coordinate
+    /// clicks and window-scoped `find` can't reach it. This walks the app's
+    /// AXMenuBar and fires AXPress on the target item. Targets the frontmost app
+    /// unless --pid, --bundle-id, or --window is given.
+    Menu {
+        /// Menu path, levels separated by the separator (default '>'), e.g. "File>Open File…"
+        path: String,
+        /// Target process ID
+        #[arg(long)]
+        pid: Option<u32>,
+        /// Target bundle ID (e.g. com.apple.TextEdit)
+        #[arg(long)]
+        bundle_id: Option<String>,
+        /// Target window ID (resolves the owning PID)
+        #[arg(long)]
+        window: Option<u32>,
+        /// Path level separator
+        #[arg(long, default_value = ">")]
+        separator: String,
+    },
+
     /// Wait for an element to appear
     WaitFor {
         window_id: u32,
@@ -516,6 +539,44 @@ async fn run(cli: &Cli, driver: &MacOSDriver) -> Result<String, loki_core::LokiE
                 }))
                 .unwrap()),
             }
+        }
+
+        Command::Menu {
+            path,
+            pid,
+            bundle_id,
+            window,
+            separator,
+        } => {
+            // Resolve the target PID: --pid, then --window's owner, then
+            // --bundle-id, then fall back to the frontmost app.
+            let target_pid: i32 = if let Some(p) = pid {
+                *p as i32
+            } else if let Some(wid) = window {
+                find_window_ref(driver, *wid).await?.pid as i32
+            } else if let Some(bid) = bundle_id {
+                driver.app_info(bid).await?.pid as i32
+            } else {
+                loki_macos::app::frontmost_pid().ok_or_else(|| {
+                    loki_core::LokiError::AppNotFound(
+                        "no frontmost app — specify --pid, --bundle-id, or --window".into(),
+                    )
+                })? as i32
+            };
+
+            let segments: Vec<String> = path
+                .split(separator.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            if segments.is_empty() {
+                return Err(loki_core::LokiError::InputError(format!(
+                    "empty menu path '{path}'"
+                )));
+            }
+
+            let element = driver.press_menu(target_pid, &segments).await?;
+            Ok(loki_core::output::format_elements(&[element], cli.format))
         }
 
         Command::WaitFor {

@@ -31,6 +31,7 @@ unsafe extern "C" {
         value: *mut CFTypeRef,
     ) -> AXError;
     fn AXValueGetValue(value: CFTypeRef, value_type: u32, value_ptr: *mut c_void) -> bool;
+    fn AXUIElementPerformAction(element: AXUIElementRef, action: CFStringRef) -> AXError;
     fn CFRelease(cf: CFTypeRef);
 }
 
@@ -156,6 +157,164 @@ pub fn walk_tree(
         path,
         children,
     })
+}
+
+// ── Menu bar navigation ──
+
+const AX_PRESS_ACTION: &str = "AXPress";
+
+/// Navigate an application's menu bar and press the item named by `path`.
+///
+/// The menu bar hangs off the *application* AX element (`AXMenuBar`), not the
+/// window tree — so coordinate clicks and window-scoped `find` can't reach it.
+/// Each path segment names one level: `["File", "Open File…"]`. Titles are
+/// matched leniently (case-insensitive, trailing ellipsis ignored, substring),
+/// so `"Open File"` matches a `"Open File…"` item.
+///
+/// AX exposes the whole menu tree even while closed, so we walk it directly and
+/// fire `AXPress` on the leaf — this bypasses the modal NSMenu event loop that
+/// swallows synthetic `CGEvent` clicks. If a level's children aren't populated
+/// yet (some apps build submenus lazily), we press the parent to open it and
+/// re-read once.
+pub fn press_menu_path(pid: i32, path: &[String]) -> LokiResult<AXElement> {
+    if path.is_empty() {
+        return Err(LokiError::InputError("empty menu path".into()));
+    }
+
+    let app = create_application_element(pid);
+    if app.is_null() {
+        return Err(LokiError::Platform(format!(
+            "failed to create AX element for PID {pid}"
+        )));
+    }
+
+    let menu_bar = get_element_attribute(app, "AXMenuBar").ok_or_else(|| {
+        LokiError::ElementNotFound(format!("app (PID {pid}) has no menu bar"))
+    })?;
+
+    // Walk down the path, one segment per level. `parent` is the container we
+    // enumerate items from: the menu bar itself, then each matched item.
+    let mut parent = menu_bar;
+    let last = path.len() - 1;
+    for (idx, segment) in path.iter().enumerate() {
+        let mut items = menu_items(parent);
+        if items.is_empty() {
+            // Lazily-built submenu: open the parent, wait briefly, re-read.
+            let _ = perform_press(parent);
+            std::thread::sleep(std::time::Duration::from_millis(80));
+            items = menu_items(parent);
+        }
+
+        // Prefer an exact (normalized) title match; only fall back to fuzzy
+        // substring/glob if nothing matches exactly. Without this, "Edit"
+        // would substring-match the "TextEdit" application menu.
+        let title_of = |it: &AXUIElementRef| get_string_attribute(*it, "AXTitle");
+        let matched = items
+            .iter()
+            .find(|it| title_of(it).is_some_and(|t| menu_title_eq(segment, &t)))
+            .or_else(|| {
+                items
+                    .iter()
+                    .find(|it| title_of(it).is_some_and(|t| menu_title_fuzzy(segment, &t)))
+            })
+            .copied()
+            .ok_or_else(|| {
+                let available: Vec<String> = items
+                    .iter()
+                    .filter_map(|it| get_string_attribute(*it, "AXTitle"))
+                    .filter(|t| !t.is_empty())
+                    .collect();
+                LokiError::ElementNotFound(format!(
+                    "menu item '{segment}' not found; available: [{}]",
+                    available.join(", ")
+                ))
+            })?;
+
+        if idx == last {
+            perform_press(matched)?;
+            return walk_tree(matched, Some(0), 0, vec![]);
+        }
+        parent = matched;
+    }
+
+    unreachable!("loop returns on the last segment")
+}
+
+/// Enumerate the selectable menu items directly under `container`.
+///
+/// A menu-bar item wraps its contents in an `AXMenu` child whose children are
+/// the real `AXMenuItem`s; the menu bar itself lists `AXMenuBarItem`s directly.
+/// Unwrap one `AXMenu` layer so callers see a flat list of pressable items.
+fn menu_items(container: AXUIElementRef) -> Vec<AXUIElementRef> {
+    let mut out = Vec::new();
+    for child in get_children(container) {
+        match get_string_attribute(child, "AXRole").as_deref() {
+            Some("AXMenu") => out.extend(get_children(child)),
+            _ => out.push(child),
+        }
+    }
+    out
+}
+
+/// Normalize a menu title for comparison: trim, drop a trailing ellipsis
+/// (`…` or `...`), and case-fold.
+fn normalize_menu_title(s: &str) -> String {
+    let s = s.trim();
+    let s = s
+        .strip_suffix('…')
+        .or_else(|| s.strip_suffix("..."))
+        .unwrap_or(s);
+    s.trim().to_lowercase()
+}
+
+/// Exact menu-title match after normalization — case-insensitive and ignoring a
+/// trailing ellipsis, so `"Open"` matches `"Open…"`. This is the preferred pass;
+/// it stops a segment from substring-matching a longer sibling (`"Edit"` must
+/// not match the `"TextEdit"` app menu).
+fn menu_title_eq(pattern: &str, title: &str) -> bool {
+    normalize_menu_title(pattern) == normalize_menu_title(title)
+}
+
+/// Fuzzy fallback: normalized substring, or glob. Used only when no item matches
+/// exactly, e.g. `"Open"` → `"Open Recent"` or `"Save*"` → `"Save As…"`.
+fn menu_title_fuzzy(pattern: &str, title: &str) -> bool {
+    let np = normalize_menu_title(pattern);
+    let nt = normalize_menu_title(title);
+    nt.contains(&np) || loki_core::query::glob_matches(pattern, title)
+}
+
+/// Lenient menu-title match: exact (normalized) OR fuzzy substring/glob.
+#[cfg(test)]
+fn menu_title_matches(pattern: &str, title: &str) -> bool {
+    menu_title_eq(pattern, title) || menu_title_fuzzy(pattern, title)
+}
+
+/// Fire the `AXPress` action on an AX element.
+fn perform_press(element: AXUIElementRef) -> LokiResult<()> {
+    unsafe {
+        let action = CFString::new(AX_PRESS_ACTION);
+        let err = AXUIElementPerformAction(element, action.as_concrete_TypeRef());
+        match err {
+            AX_ERROR_SUCCESS => Ok(()),
+            AX_ERROR_API_DISABLED => Err(LokiError::PermissionDenied),
+            _ => Err(LokiError::Platform(format!(
+                "AXPress failed (AXError {err})"
+            ))),
+        }
+    }
+}
+
+/// Get a single element-valued attribute (e.g. `AXMenuBar`) as a raw ref.
+fn get_element_attribute(element: AXUIElementRef, attribute: &str) -> Option<AXUIElementRef> {
+    unsafe {
+        let cf_attr = CFString::new(attribute);
+        let mut value: CFTypeRef = std::ptr::null();
+        let err = AXUIElementCopyAttributeValue(element, cf_attr.as_concrete_TypeRef(), &mut value);
+        if err != AX_ERROR_SUCCESS || value.is_null() {
+            return None;
+        }
+        Some(value as AXUIElementRef)
+    }
 }
 
 // ── Attribute helpers ──
@@ -299,5 +458,62 @@ fn get_array_attribute(
             AX_ERROR_NO_VALUE | AX_ERROR_ATTRIBUTE_UNSUPPORTED => Ok(Vec::new()),
             _ => Ok(Vec::new()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{menu_title_eq, menu_title_fuzzy, menu_title_matches};
+
+    #[test]
+    fn test_menu_title_eq_prefers_exact_not_substring() {
+        // Regression: "Edit" must NOT exact-match the "TextEdit" app menu.
+        // press_menu_path uses eq first, so this keeps top-level nav correct.
+        assert!(!menu_title_eq("Edit", "TextEdit"));
+        assert!(menu_title_eq("Edit", "Edit"));
+        // ...but fuzzy would (wrongly) accept it — which is why eq goes first.
+        assert!(menu_title_fuzzy("Edit", "TextEdit"));
+    }
+
+    #[test]
+    fn test_menu_title_eq_ellipsis() {
+        assert!(menu_title_eq("Open", "Open…"));
+        assert!(menu_title_eq("Save As…", "Save As"));
+    }
+
+    #[test]
+    fn test_menu_title_exact() {
+        assert!(menu_title_matches("File", "File"));
+        assert!(!menu_title_matches("File", "Edit"));
+    }
+
+    #[test]
+    fn test_menu_title_ignores_trailing_ellipsis() {
+        // User omits the ellipsis the app renders.
+        assert!(menu_title_matches("Open File", "Open File…"));
+        assert!(menu_title_matches("Open File", "Open File..."));
+        // And the reverse: user types it, app omits it.
+        assert!(menu_title_matches("Save As…", "Save As"));
+    }
+
+    #[test]
+    fn test_menu_title_case_insensitive() {
+        assert!(menu_title_matches("open file", "Open File…"));
+        assert!(menu_title_matches("FILE", "File"));
+    }
+
+    #[test]
+    fn test_menu_title_substring() {
+        assert!(menu_title_matches("Open", "Open Recent"));
+    }
+
+    #[test]
+    fn test_menu_title_glob() {
+        assert!(menu_title_matches("Save*", "Save As…"));
+    }
+
+    #[test]
+    fn test_menu_title_no_false_match() {
+        assert!(!menu_title_matches("Close", "Open File…"));
     }
 }

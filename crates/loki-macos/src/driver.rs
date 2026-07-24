@@ -222,6 +222,16 @@ impl DesktopDriver for MacOSDriver {
         input::send_key_combo(combo, pid)
     }
 
+    async fn press_menu(&self, pid: i32, path: &[String]) -> LokiResult<AXElement> {
+        if !self.has_accessibility_permission() {
+            return Err(LokiError::PermissionDenied);
+        }
+        // Menus are app-contextual and some apps build them lazily on activation,
+        // so bring the target app frontmost before walking its menu bar.
+        app::activate_app(pid as u32)?;
+        accessibility::press_menu_path(pid, path)
+    }
+
     // ── Screenshot (Phase 2) ──
 
     async fn screenshot(&self, window_id: Option<u32>, screen: bool) -> LokiResult<Vec<u8>> {

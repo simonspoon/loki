@@ -368,6 +368,30 @@ pub fn activate_app(pid: u32) -> LokiResult<()> {
     Ok(())
 }
 
+/// Get the PID of the frontmost (foreground) application, if any.
+pub fn frontmost_pid() -> Option<u32> {
+    // `lsappinfo front` prints the front app's ASN; resolve it to a PID.
+    let front = Command::new("lsappinfo").arg("front").output().ok()?;
+    if !front.status.success() {
+        return None;
+    }
+    let asn = String::from_utf8_lossy(&front.stdout).trim().to_string();
+    if asn.is_empty() {
+        return None;
+    }
+
+    let out = Command::new("lsappinfo")
+        .args(["info", "-only", "pid", &asn])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    parse_pid_output(&String::from_utf8_lossy(&out.stdout))
+        .into_iter()
+        .next()
+}
+
 /// Check if a PID is the frontmost application.
 fn is_frontmost(pid: u32) -> bool {
     let output = Command::new("lsappinfo")

@@ -67,6 +67,10 @@ pub trait DesktopDriver: Send + Sync {
     /// Press a key combination (e.g. "cmd+shift+s"). If `pid` is Some, target that process.
     async fn key_press(&self, combo: &str, pid: Option<i32>) -> LokiResult<()>;
 
+    /// Navigate the app's menu bar (identified by `pid`) and press the item named
+    /// by `path` (e.g. `["File", "Open File…"]`). Returns the pressed item.
+    async fn press_menu(&self, pid: i32, path: &[String]) -> LokiResult<AXElement>;
+
     // ── Screenshot ──
 
     /// Capture a screenshot, returning the PNG bytes.
