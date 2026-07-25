@@ -71,13 +71,33 @@ List open windows, optionally filtered:
 ```bash
 loki windows                              # Named windows only
 loki windows --all                        # Include untitled windows
-loki windows --title "Calculator"         # By title glob
+loki windows --title "Calculator"         # By title (substring)
 loki windows --bundle-id com.apple.Safari # By bundle ID
 loki windows --pid 12345                  # By process ID
 ```
 
 By default, windows with empty titles (system-level helper windows) are hidden.
 Use `--all` to include them.
+
+### Window title matching
+
+`--title` matches as a **substring**, the same way `--label` does for elements:
+`--title ash-md` finds a window titled `ash-md — README.md`. A pattern carrying
+glob metacharacters is used verbatim, so you can anchor it:
+
+```bash
+loki windows --title "ash-md"      # substring   → matches "ash-md — README.md"
+loki windows --title "ash-md*"     # prefix      → matches "ash-md — README.md"
+loki windows --title "*README.md"  # suffix      → does not match "…README.md.bak"
+loki windows --title "ash-m[d]"    # whole title → matches only "ash-md"
+```
+
+Matching is **case-sensitive** (`ash-md` will not find `ASH-MD`). Every command
+that takes a *window* title uses this identical matching — `windows`,
+`wait-window`, `wait-title`, and `screenshot --window <title>` — so if one finds
+a window, so do the others. Element queries (`find --title`, `click-element
+--title`, `wait-for --title`) are a separate, strict field match; use `--label`
+there for substring behaviour.
 
 Each window has a numeric `window_id` used by other commands.
 
@@ -274,6 +294,20 @@ Wait for a window to appear:
 ```bash
 loki wait-window --title "Document"
 loki wait-window --bundle-id com.apple.TextEdit --timeout 10000
+```
+
+Matching is identical to `windows --title` (substring, case-sensitive), so a
+timeout here is almost always **launch latency, not a bad pattern**. A freshly
+built or newly copied `.app` can take 15s+ to open its first window — macOS
+scans a new binary on first launch — so give the first `wait-window` after a
+rebuild `--timeout 20000` or more. The timeout error reports the glob it
+actually matched, how many windows it saw, and any case-insensitive near-miss:
+
+```
+error: timed out after 800ms waiting for title glob "*ASH-MD*"
+  seen: 203 windows (62 titled)
+  near-miss (title matching is case-sensitive): "ash-md"
+  hint: a freshly built or newly copied .app can take 15s+ to open its first window …
 ```
 
 ### Wait for title change

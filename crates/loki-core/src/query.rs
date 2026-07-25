@@ -172,7 +172,42 @@ pub struct WindowFilter {
     pub include_unnamed: bool,
 }
 
-/// Check if a string matches a glob pattern (case-insensitive).
+impl WindowFilter {
+    /// Check a window title against this filter's title pattern.
+    ///
+    /// Window titles match as a **substring**: a bare `"ash-md"` matches
+    /// `"ash-md — README.md"`, the same way `--label` behaves for elements.
+    /// A pattern carrying glob metacharacters is used verbatim, so `"ash-md*"`
+    /// anchors the start and `"ash-m[d]"` pins the whole title.
+    pub fn matches_title(&self, title: &str) -> bool {
+        match self.title {
+            Some(ref pattern) => glob_matches(&auto_wrap_pattern(pattern), title),
+            None => true,
+        }
+    }
+
+    /// The glob actually used to match titles — for diagnostics, so an error
+    /// can show what was matched rather than what was typed.
+    pub fn effective_title_pattern(&self) -> Option<String> {
+        self.title.as_deref().map(auto_wrap_pattern)
+    }
+}
+
+/// Wrap a bare pattern with substring globs so `"Projects"` matches any value
+/// containing "Projects". A pattern that already carries glob metacharacters
+/// (`*`, `?`, `[`) passes through unchanged. Empty stays empty — wrapping it to
+/// `**` would match everything.
+pub fn auto_wrap_pattern(pattern: &str) -> String {
+    if pattern.is_empty() {
+        return String::new();
+    }
+    if pattern.contains('*') || pattern.contains('?') || pattern.contains('[') {
+        return pattern.to_string();
+    }
+    format!("*{pattern}*")
+}
+
+/// Check if a string matches a glob pattern. Case-sensitive.
 pub fn glob_matches(pattern: &str, value: &str) -> bool {
     // Try as glob pattern first; fall back to substring match if invalid
     match Pattern::new(pattern) {
@@ -207,6 +242,62 @@ mod tests {
     #[test]
     fn test_glob_invalid_falls_back_to_substring() {
         assert!(glob_matches("[invalid", "[invalid pattern"));
+    }
+
+    // ── Window title matching (mesa 530) ──
+
+    fn title_filter(pattern: &str) -> WindowFilter {
+        WindowFilter {
+            title: Some(pattern.to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_window_title_matches_substring() {
+        // The reported case: a bare app name against a decorated window title.
+        assert!(title_filter("ash-md").matches_title("ash-md — README.md"));
+        assert!(title_filter("ash-md").matches_title("ash-md"));
+        assert!(!title_filter("ash-md").matches_title("Safari"));
+    }
+
+    #[test]
+    fn test_window_title_glob_passthrough_anchors() {
+        assert!(title_filter("ash-md*").matches_title("ash-md — README.md"));
+        assert!(!title_filter("*README.md").matches_title("ash-md — README.md.bak"));
+        // Metacharacters escape the auto-wrap, so a whole-title pin stays possible.
+        assert!(title_filter("ash-m[d]").matches_title("ash-md"));
+        assert!(!title_filter("ash-m[d]").matches_title("ash-md — README.md"));
+    }
+
+    #[test]
+    fn test_window_title_absent_pattern_matches_all() {
+        assert!(WindowFilter::default().matches_title("anything"));
+        assert!(WindowFilter::default().matches_title(""));
+    }
+
+    #[test]
+    fn test_window_title_is_case_sensitive() {
+        // Documented, and what the timeout diagnostic reports as a near-miss.
+        assert!(!title_filter("ash-md").matches_title("ASH-MD"));
+    }
+
+    #[test]
+    fn test_effective_title_pattern_reports_the_wrap() {
+        assert_eq!(
+            title_filter("ash-md").effective_title_pattern().unwrap(),
+            "*ash-md*"
+        );
+        assert_eq!(
+            title_filter("ash-md*").effective_title_pattern().unwrap(),
+            "ash-md*"
+        );
+        assert_eq!(WindowFilter::default().effective_title_pattern(), None);
+    }
+
+    #[test]
+    fn test_auto_wrap_pattern_empty_stays_empty() {
+        assert_eq!(auto_wrap_pattern(""), "");
     }
 
     // ── Role matching tests ──

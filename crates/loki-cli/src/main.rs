@@ -5,17 +5,10 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 /// Wrap a bare `--label` pattern with substring globs so that `"Projects"` matches
-/// any text field containing "Projects". If the pattern already contains glob
-/// metacharacters (`*`, `?`, `[`), pass it through unchanged. Empty string is
-/// left as-is — wrapping it to `**` would match everything.
+/// any text field containing "Projects". Window `--title` filters get the same
+/// treatment inside `WindowFilter::matches_title`.
 fn auto_wrap_label(s: &str) -> String {
-    if s.is_empty() {
-        return String::new();
-    }
-    if s.contains('*') || s.contains('?') || s.contains('[') {
-        return s.to_string();
-    }
-    format!("*{}*", s)
+    loki_core::query::auto_wrap_pattern(s)
 }
 
 #[derive(Parser)]
@@ -55,6 +48,7 @@ enum Command {
         bundle_id: Option<String>,
         #[arg(long)]
         pid: Option<u32>,
+        /// Match the window title. Case-sensitive; supports glob metacharacters (*, ?, [..]) — without them, matches as substring.
         #[arg(long)]
         title: Option<String>,
         /// Include windows with empty titles
@@ -264,7 +258,12 @@ enum Command {
     },
 
     /// Wait for a window to appear
+    ///
+    /// Matches exactly like `windows --title`. A timeout here is usually launch
+    /// latency, not a bad pattern — a freshly built `.app` can take 15s+ to open
+    /// its first window because macOS scans a new binary on first launch.
     WaitWindow {
+        /// Match the window title. Case-sensitive; supports glob metacharacters (*, ?, [..]) — without them, matches as substring.
         #[arg(long)]
         title: Option<String>,
         #[arg(long)]
@@ -651,7 +650,15 @@ async fn run(cli: &Cli, driver: &MacOSDriver) -> Result<String, loki_core::LokiE
                 include_unnamed: true,
             };
             let t = timeout.unwrap_or(cli.timeout);
-            let info = driver.wait_window(&filter, t).await?;
+            let info = match driver.wait_window(&filter, t).await {
+                Ok(info) => info,
+                // A bare "timed out after Nms" can't tell a slow launch from a
+                // pattern that never matched — say which, with evidence.
+                Err(loki_core::LokiError::Timeout(ms)) => {
+                    return Err(explain_wait_window_timeout(driver, &filter, ms).await)
+                }
+                Err(e) => return Err(e),
+            };
             Ok(loki_core::output::format_windows(&[info], cli.format))
         }
 
@@ -665,6 +672,82 @@ async fn run(cli: &Cli, driver: &MacOSDriver) -> Result<String, loki_core::LokiE
             let info = driver.wait_title(&window, pattern, t).await?;
             Ok(loki_core::output::format_windows(&[info], cli.format))
         }
+    }
+}
+
+/// Turn a `wait-window` timeout into something diagnosable: the glob actually
+/// matched against, the window list as it stood when time ran out, any
+/// case-insensitive near-miss, and the launch-latency trap that is the usual
+/// cause (a freshly built `.app` can take well over 10s to show its window).
+async fn explain_wait_window_timeout(
+    driver: &MacOSDriver,
+    filter: &WindowFilter,
+    timeout_ms: u64,
+) -> loki_core::LokiError {
+    let all = driver
+        .list_windows(&WindowFilter {
+            include_unnamed: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap_or_default();
+    let titled: Vec<&loki_core::WindowInfo> = all.iter().filter(|w| !w.title.is_empty()).collect();
+
+    let mut wanted = Vec::new();
+    if let Some(pattern) = filter.effective_title_pattern() {
+        wanted.push(format!("title glob {pattern:?}"));
+    }
+    if let Some(ref bundle_id) = filter.bundle_id {
+        wanted.push(format!("bundle-id {bundle_id:?}"));
+    }
+    let wanted = if wanted.is_empty() {
+        "any window".to_string()
+    } else {
+        wanted.join(" + ")
+    };
+
+    let mut lines = vec![
+        format!("waiting for {wanted}"),
+        format!("  seen: {} windows ({} titled)", all.len(), titled.len()),
+    ];
+
+    if let Some(ref bundle_id) = filter.bundle_id {
+        let n = all
+            .iter()
+            .filter(|w| {
+                w.bundle_id
+                    .as_deref()
+                    .is_some_and(|b| b.eq_ignore_ascii_case(bundle_id))
+            })
+            .count();
+        lines.push(format!("  {n} of them belong to {bundle_id:?}"));
+    }
+
+    if let Some(raw) = filter.title.as_deref() {
+        let needle = raw.trim_matches('*').to_lowercase();
+        let near: Vec<String> = titled
+            .iter()
+            .filter(|w| w.title.to_lowercase().contains(&needle))
+            .map(|w| format!("{:?}", w.title))
+            .take(3)
+            .collect();
+        if !near.is_empty() {
+            lines.push(format!(
+                "  near-miss (title matching is case-sensitive): {}",
+                near.join(", ")
+            ));
+        }
+    }
+
+    lines.push(
+        "  hint: a freshly built or newly copied .app can take 15s+ to open its first window \
+         (macOS scans a new binary on first launch) — retry with a longer --timeout"
+            .to_string(),
+    );
+
+    loki_core::LokiError::TimeoutDetail {
+        timeout_ms,
+        detail: lines.join("\n"),
     }
 }
 

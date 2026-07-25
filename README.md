@@ -66,7 +66,7 @@ loki kill com.apple.Calculator
 | `launch` | Launch an app by name, bundle ID, or path |
 | `kill` | Terminate an app |
 | `app-info` | Get info about a running app (by name, bundle ID, or --pid) |
-| `windows` | List open windows (filter by title/bundle-id/pid) |
+| `windows` | List open windows (filter by title/bundle-id/pid; `--title` is a case-sensitive substring) |
 | `tree` | Dump accessibility tree for a window |
 | `find` | Find elements by role, title, label, identifier |
 | `click` | Click at screen coordinates (use --pid to target an app) |
@@ -78,7 +78,7 @@ loki kill com.apple.Calculator
 | `screenshot` | Capture window (by ID or title) or screen as PNG |
 | `wait-for` | Wait for an element to appear |
 | `wait-gone` | Wait for an element to disappear |
-| `wait-window` | Wait for a window to appear |
+| `wait-window` | Wait for a window to appear (same matching as `windows`; a fresh `.app` needs `--timeout 20000`+) |
 | `wait-title` | Wait for window title to match pattern |
 | `check-permission` | Check accessibility permission |
 | `request-permission` | Prompt for accessibility permission |

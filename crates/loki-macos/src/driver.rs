@@ -58,10 +58,8 @@ impl DesktopDriver for MacOSDriver {
                 if !filter.include_unnamed && w.title.is_empty() {
                     return false;
                 }
-                if let Some(ref pat) = filter.title {
-                    if !loki_core::query::glob_matches(pat, &w.title) {
-                        return false;
-                    }
+                if !filter.matches_title(&w.title) {
+                    return false;
                 }
                 if let Some(ref bid) = filter.bundle_id {
                     match &w.bundle_id {
@@ -339,9 +337,13 @@ impl DesktopDriver for MacOSDriver {
         let mut delay = Duration::from_millis(50);
         let max_delay = Duration::from_millis(500);
 
+        // Same substring-by-default rule as `WindowFilter::matches_title`, so a
+        // window title means the same thing in every command that takes one.
+        let pattern = loki_core::query::auto_wrap_pattern(pattern);
+
         loop {
             if let Ok(info) = self.find_window_info(window).await {
-                if loki_core::query::glob_matches(pattern, &info.title) {
+                if loki_core::query::glob_matches(&pattern, &info.title) {
                     debug!(pattern, title = %info.title, "title matched");
                     return Ok(info);
                 }

@@ -88,6 +88,30 @@ fn test_find_label_flag_parses() {
         .stderr(predicate::str::contains("--label").not());
 }
 
+// ── wait-window diagnostics (mesa 530) ──
+
+#[test]
+fn test_wait_window_timeout_explains_itself() {
+    // A bare "timed out after Nms" made a slow launch look like a matching bug.
+    // The timeout must name the glob it matched and stay on exit code 3.
+    loki()
+        .args([
+            "wait-window",
+            "--title",
+            "loki-no-such-window-530",
+            "--timeout",
+            "200",
+        ])
+        .assert()
+        .code(3)
+        .stderr(predicate::str::contains("timed out after 200ms"))
+        .stderr(predicate::str::contains(
+            "waiting for title glob \"*loki-no-such-window-530*\"",
+        ))
+        .stderr(predicate::str::contains("seen:"))
+        .stderr(predicate::str::contains("--timeout"));
+}
+
 // ── Invalid usage ──
 
 #[test]

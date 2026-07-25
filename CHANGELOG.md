@@ -5,7 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.3.0] - 2026-07-23
+## [Unreleased]
+
+### Changed
+
+- Every command taking a *window* title — `windows`, `wait-window`, `wait-title`, `screenshot --window <title>` — now auto-wraps bare patterns as substring matches, the same treatment `--label` got in 0.2.2: `--title ash-md` matches a window titled `ash-md — README.md`. Explicit glob metacharacters (`*`, `?`, `[..]`) still pass through verbatim, so `--title "ash-m[d]"` pins the whole title. Element `--title` (`find`, `click-element`, `wait-for`, `wait-gone`) is unchanged and still strict.
+
+### Fixed
+
+- `wait-window` timeouts now say what they were waiting for instead of a bare `timed out after 10000ms`: the glob actually matched, how many windows were visible, how many belong to a `--bundle-id`, any case-insensitive near-miss, and the usual cause — a freshly built `.app` can take 15s+ to open its first window because macOS scans a new binary on first launch. Exit code is still 3. The bare message had made slow launches look like a matching bug between `wait-window` and `windows`, which share one code path and have never differed.
 
 ### Added
 
