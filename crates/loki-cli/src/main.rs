@@ -127,6 +127,9 @@ enum Command {
     },
 
     /// Click at screen coordinates
+    // Screens left of / above the primary display have negative origins, so a
+    // coordinate can legitimately start with '-'; without this clap reads it as a flag.
+    #[command(allow_negative_numbers = true)]
     Click {
         x: f64,
         y: f64,
@@ -154,6 +157,40 @@ enum Command {
         label: Option<String>,
         #[arg(long)]
         id: Option<String>,
+    },
+
+    /// Drag from one screen point to another, e.g. `drag 404 300 244 300`
+    ///
+    /// Posts a real press → move → release mouse gesture at the OS event tap —
+    /// the only input a divider, resizer, or slider accepts, since weaker
+    /// synthetic events never get `setPointerCapture` and are ignored silently.
+    /// Pass --pid or --window: a raw mouse event does NOT activate the target
+    /// app, and an inactive app swallows the whole drag without erroring.
+    /// Note a resizer's grab strip often sits a few pixels beside the visible
+    /// boundary line; aim at the hit target, not at what you can see.
+    #[command(allow_negative_numbers = true)]
+    Drag {
+        /// Start X in absolute screen coordinates
+        x1: f64,
+        /// Start Y in absolute screen coordinates
+        y1: f64,
+        /// End X in absolute screen coordinates
+        x2: f64,
+        /// End Y in absolute screen coordinates
+        y2: f64,
+        /// Number of intermediate move events along the path. Very low counts are
+        /// unreliable — a single-jump drag is intermittently ignored; raise, don't lower
+        #[arg(long, default_value_t = loki_macos::input::DEFAULT_DRAG_STEPS)]
+        steps: usize,
+        /// Pause between mouse events in milliseconds (lets the app re-render mid-drag)
+        #[arg(long, default_value_t = loki_macos::input::DEFAULT_DRAG_DELAY_MS)]
+        delay: u64,
+        /// Target process ID (activates app before dragging)
+        #[arg(long)]
+        pid: Option<u32>,
+        /// Target window ID (activates app before dragging)
+        #[arg(long)]
+        window: Option<u32>,
     },
 
     /// Type a string of text (use --pid or --window to target a specific app)
@@ -536,6 +573,35 @@ async fn run(cli: &Cli, driver: &MacOSDriver) -> Result<String, loki_core::LokiE
             };
             let element = driver.click_element(&window, &query).await?;
             Ok(loki_core::output::format_elements(&[element], cli.format))
+        }
+
+        Command::Drag {
+            x1,
+            y1,
+            x2,
+            y2,
+            steps,
+            delay,
+            pid,
+            window,
+        } => {
+            let target_pid = resolve_target_pid(driver, *pid, *window).await?;
+            driver
+                .drag((*x1, *y1), (*x2, *y2), *steps, *delay, target_pid)
+                .await?;
+            match cli.format {
+                OutputFormat::Text => {
+                    Ok(format!("Dragged from ({x1}, {y1}) to ({x2}, {y2})"))
+                }
+                OutputFormat::Json => Ok(serde_json::to_string_pretty(&serde_json::json!({
+                    "action": "drag",
+                    "from": { "x": x1, "y": y1 },
+                    "to": { "x": x2, "y": y2 },
+                    "steps": steps,
+                    "delay": delay,
+                }))
+                .unwrap()),
+            }
         }
 
         Command::Type { text, pid, window } => {

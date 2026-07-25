@@ -54,6 +54,21 @@ pub trait DesktopDriver: Send + Sync {
         pid: Option<i32>,
     ) -> LokiResult<()>;
 
+    /// Drag from one screen point to another with real OS-level mouse events
+    /// (press → `steps` intermediate moves → release), pausing `delay_ms`
+    /// between each so a controlled component can re-render mid-gesture.
+    ///
+    /// If `pid` is Some, activate that app first: a raw mouse event does not
+    /// activate the target, and an inactive app swallows the drag with no error.
+    async fn drag(
+        &self,
+        from: (f64, f64),
+        to: (f64, f64),
+        steps: usize,
+        delay_ms: u64,
+        pid: Option<i32>,
+    ) -> LokiResult<()>;
+
     /// Click the center of a UI element.
     async fn click_element(
         &self,

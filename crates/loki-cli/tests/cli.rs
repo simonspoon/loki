@@ -60,6 +60,53 @@ fn test_click_element_help_shows_label() {
 }
 
 #[test]
+fn test_drag_help_documents_activation_gotcha() {
+    loki()
+        .args(["drag", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--steps"))
+        .stdout(predicate::str::contains("--delay"))
+        // The silent-no-op trap this command exists to remove: a raw mouse
+        // event doesn't activate the app, so --pid/--window is load-bearing.
+        .stdout(predicate::str::contains("does NOT activate"));
+}
+
+#[test]
+fn test_drag_requires_four_coordinates() {
+    loki()
+        .args(["drag", "100", "200", "300"])
+        .assert()
+        .failure();
+}
+
+// A display left of / above the primary has a negative origin, so these are real
+// coordinates — clap would otherwise parse "-5" as an unknown flag and refuse.
+#[test]
+fn test_drag_accepts_negative_coordinates() {
+    loki()
+        .args(["drag", "-5", "-20", "100", "200", "--help"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn test_click_accepts_negative_coordinates() {
+    loki()
+        .args(["click", "-5", "-20", "--help"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn test_drag_rejects_non_numeric_coordinates() {
+    loki()
+        .args(["drag", "100", "200", "left", "200"])
+        .assert()
+        .failure();
+}
+
+#[test]
 fn test_wait_for_help_shows_label() {
     loki()
         .args(["wait-for", "--help"])

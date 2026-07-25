@@ -172,6 +172,22 @@ impl DesktopDriver for MacOSDriver {
         }
     }
 
+    async fn drag(
+        &self,
+        from: (f64, f64),
+        to: (f64, f64),
+        steps: usize,
+        delay_ms: u64,
+        pid: Option<i32>,
+    ) -> LokiResult<()> {
+        // A raw mouse event carries no activation, and an inactive app drops the
+        // whole gesture without erroring — so activate before the press, not after.
+        if let Some(p) = pid {
+            app::activate_app(p as u32)?;
+        }
+        input::drag_from_to(from.0, from.1, to.0, to.1, steps, delay_ms)
+    }
+
     async fn click_element(
         &self,
         window: &WindowRef,

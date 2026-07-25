@@ -122,6 +122,70 @@ pub fn right_click_at(x: f64, y: f64) -> LokiResult<()> {
     Ok(())
 }
 
+/// Default number of intermediate move events along a drag path.
+pub const DEFAULT_DRAG_STEPS: usize = 10;
+
+/// Default pause between drag events, in milliseconds.
+pub const DEFAULT_DRAG_DELAY_MS: u64 = 16;
+
+/// Interpolate the intermediate points of a drag, excluding the start and
+/// including the end. `steps` is clamped to at least 1 so the gesture always
+/// reaches its destination.
+fn drag_path(x1: f64, y1: f64, x2: f64, y2: f64, steps: usize) -> Vec<CGPoint> {
+    let steps = steps.max(1);
+    (1..=steps)
+        .map(|i| {
+            let t = i as f64 / steps as f64;
+            CGPoint::new(x1 + (x2 - x1) * t, y1 + (y2 - y1) * t)
+        })
+        .collect()
+}
+
+/// Drag from one absolute screen point to another.
+///
+/// Posts a real press → move → release gesture at the HID event tap. This is
+/// the only input a divider/resizer/slider accepts: weaker synthetic events are
+/// never granted `setPointerCapture`, so a webview resizer ignores them
+/// silently. The `delay_ms` pause between events gives a controlled component
+/// time to re-render between steps — without it, fast drags land as no-ops.
+///
+/// Does NOT activate the target app; the caller must do that first (see
+/// `DesktopDriver::drag`), or an inactive app will swallow the whole gesture.
+pub fn drag_from_to(
+    x1: f64,
+    y1: f64,
+    x2: f64,
+    y2: f64,
+    steps: usize,
+    delay_ms: u64,
+) -> LokiResult<()> {
+    let source = event_source()?;
+    let start = CGPoint::new(x1, y1);
+    let delay = Duration::from_millis(delay_ms);
+
+    let post = |kind: CGEventType, point: CGPoint| -> LokiResult<()> {
+        let event = CGEvent::new_mouse_event(source.clone(), kind, point, CGMouseButton::Left)
+            .map_err(|()| LokiError::InputError(format!("failed to create {kind:?} event")))?;
+        event.post(CGEventTapLocation::HID);
+        Ok(())
+    };
+
+    // Hover first: resizers and other hit strips commonly arm themselves on
+    // mouse-enter, and a press with no preceding move never triggers that.
+    post(CGEventType::MouseMoved, start)?;
+    thread::sleep(delay);
+
+    post(CGEventType::LeftMouseDown, start)?;
+    thread::sleep(delay);
+
+    for point in drag_path(x1, y1, x2, y2, steps) {
+        post(CGEventType::LeftMouseDragged, point)?;
+        thread::sleep(delay);
+    }
+
+    post(CGEventType::LeftMouseUp, CGPoint::new(x2, y2))
+}
+
 // ── Keyboard ──
 
 /// Type a string using System Events keystroke via osascript.
@@ -273,6 +337,40 @@ fn applescript_key_code(name: &str) -> Option<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_drag_path_reaches_destination() {
+        let path = drag_path(0.0, 0.0, 100.0, 50.0, 10);
+        assert_eq!(path.len(), 10);
+        let last = path.last().unwrap();
+        assert_eq!(last.x, 100.0);
+        assert_eq!(last.y, 50.0);
+    }
+
+    #[test]
+    fn test_drag_path_excludes_start_and_interpolates() {
+        let path = drag_path(0.0, 0.0, 100.0, 0.0, 4);
+        let xs: Vec<f64> = path.iter().map(|p| p.x).collect();
+        assert_eq!(xs, vec![25.0, 50.0, 75.0, 100.0]);
+    }
+
+    #[test]
+    fn test_drag_path_zero_steps_still_reaches_destination() {
+        // steps=0 would otherwise post no move events at all, leaving a
+        // press/release pair at the origin — a click, not a drag.
+        let path = drag_path(10.0, 10.0, 60.0, 20.0, 0);
+        assert_eq!(path.len(), 1);
+        assert_eq!(path[0].x, 60.0);
+        assert_eq!(path[0].y, 20.0);
+    }
+
+    #[test]
+    fn test_drag_path_handles_negative_delta() {
+        let path = drag_path(400.0, 300.0, 240.0, 300.0, 2);
+        assert_eq!(path[0].x, 320.0);
+        assert_eq!(path[1].x, 240.0);
+        assert!(path.iter().all(|p| p.y == 300.0));
+    }
 
     #[test]
     fn test_parse_combo_single_key() {

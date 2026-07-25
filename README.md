@@ -36,6 +36,11 @@ loki click-element <WINDOW_ID> --title "Add"
 loki click-element <WINDOW_ID> --title "3"
 loki click-element <WINDOW_ID> --title "Equals"
 
+# Drag a divider, resizer, or slider (real OS mouse events — synthetic ones
+# never get pointer capture, so weaker input is ignored silently)
+loki drag 404 300 244 300 --window <WINDOW_ID>
+loki drag 404 300 244 300 --window <WINDOW_ID> --steps 20 --delay 25
+
 # Type text and send key combos
 loki type "Hello" --window <WINDOW_ID>
 loki key cmd+a --window <WINDOW_ID>
@@ -71,6 +76,7 @@ loki kill com.apple.Calculator
 | `find` | Find elements by role, title, label, identifier |
 | `click` | Click at screen coordinates (use --pid to target an app) |
 | `click-element` | Click a UI element by query |
+| `drag` | Drag between two screen points with real OS mouse events (dividers, resizers, sliders) |
 | `type` | Type text (use --window to target an app) |
 | `key` | Send key combo, e.g. `cmd+s`, `ctrl+shift+a` |
 | `menu` | Open and press an app menu-bar item by path, e.g. `"File>Open File…"` |
