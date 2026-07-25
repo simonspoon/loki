@@ -227,21 +227,18 @@ fn scroll_increments(delta: i32, steps: usize) -> Vec<i32> {
 ///
 /// Does NOT activate the target app; the caller must do that first (see
 /// `DesktopDriver::wheel`).
-pub fn scroll_at(
-    x: f64,
-    y: f64,
-    dx: i32,
-    dy: i32,
-    steps: usize,
-    delay_ms: u64,
-) -> LokiResult<()> {
+pub fn scroll_at(x: f64, y: f64, dx: i32, dy: i32, steps: usize, delay_ms: u64) -> LokiResult<()> {
     let source = event_source()?;
     let point = CGPoint::new(x, y);
     let delay = Duration::from_millis(delay_ms);
 
-    let move_event =
-        CGEvent::new_mouse_event(source.clone(), CGEventType::MouseMoved, point, CGMouseButton::Left)
-            .map_err(|()| LokiError::InputError("failed to create mouse move event".into()))?;
+    let move_event = CGEvent::new_mouse_event(
+        source.clone(),
+        CGEventType::MouseMoved,
+        point,
+        CGMouseButton::Left,
+    )
+    .map_err(|()| LokiError::InputError("failed to create mouse move event".into()))?;
     move_event.post(CGEventTapLocation::HID);
     thread::sleep(delay);
 

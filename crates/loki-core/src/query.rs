@@ -156,10 +156,7 @@ pub enum ClickTarget<'a> {
 /// `--label` was built for) and clicking the first hit is the established
 /// behaviour there.
 pub fn pick_click_target(matches: &[AXElement]) -> ClickTarget<'_> {
-    let actionable: Vec<&AXElement> = matches
-        .iter()
-        .filter(|e| is_actionable(&e.role))
-        .collect();
+    let actionable: Vec<&AXElement> = matches.iter().filter(|e| is_actionable(&e.role)).collect();
 
     match actionable.len() {
         0 => match matches.first() {

@@ -631,9 +631,7 @@ async fn run(cli: &Cli, driver: &MacOSDriver) -> Result<String, loki_core::LokiE
                 .drag((*x1, *y1), (*x2, *y2), *steps, *delay, target_pid)
                 .await?;
             match cli.format {
-                OutputFormat::Text => {
-                    Ok(format!("Dragged from ({x1}, {y1}) to ({x2}, {y2})"))
-                }
+                OutputFormat::Text => Ok(format!("Dragged from ({x1}, {y1}) to ({x2}, {y2})")),
                 OutputFormat::Json => Ok(serde_json::to_string_pretty(&serde_json::json!({
                     "action": "drag",
                     "from": { "x": x1, "y": y1 },
@@ -660,9 +658,7 @@ async fn run(cli: &Cli, driver: &MacOSDriver) -> Result<String, loki_core::LokiE
                 .wheel((*x, *y), (dx, dy), *steps, *delay, target_pid)
                 .await?;
             match cli.format {
-                OutputFormat::Text => {
-                    Ok(format!("Scrolled ({dx}, {dy}) at ({x}, {y})"))
-                }
+                OutputFormat::Text => Ok(format!("Scrolled ({dx}, {dy}) at ({x}, {y})")),
                 OutputFormat::Json => Ok(serde_json::to_string_pretty(&serde_json::json!({
                     "action": "wheel",
                     "at": { "x": x, "y": y },
