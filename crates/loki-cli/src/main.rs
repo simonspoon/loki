@@ -125,6 +125,13 @@ enum Command {
         id: Option<String>,
         #[arg(long)]
         index: Option<usize>,
+        /// Exit 1 when the query matches nothing, instead of exiting 0 with an
+        /// empty result. Without it a mistyped query is byte-identical to the
+        /// element genuinely being absent, so a typo reads as an app bug.
+        /// Off by default: a script that legitimately asserts absence
+        /// (`find … | jq length` == 0) must keep exiting 0.
+        #[arg(long)]
+        require_match: bool,
     },
 
     /// Click at screen coordinates
@@ -647,6 +654,7 @@ async fn run(cli: &Cli, driver: &MacOSDriver) -> Result<String, loki_core::LokiE
             label,
             id,
             index,
+            require_match,
         } => {
             let window = find_window_ref(driver, *window_id).await?;
             let query = ElementQuery {
@@ -658,6 +666,20 @@ async fn run(cli: &Cli, driver: &MacOSDriver) -> Result<String, loki_core::LokiE
                 ..Default::default()
             };
             let elements = driver.find_elements(&window, &query).await?;
+
+            if elements.is_empty() {
+                let detail = explain_empty_find(driver, &window, &query).await;
+                if *require_match {
+                    return Err(loki_core::LokiError::ElementNotFound(detail));
+                }
+                // Default path keeps exit 0 and the machine-readable shape:
+                // `-f json` must stay `[]` for `jq length` absence asserts.
+                // Text output gets the same diagnostic the error carries, so a
+                // caller who never passes --require-match still sees *why*.
+                if matches!(cli.format, OutputFormat::Text) {
+                    return Ok(format!("No elements found: {detail}"));
+                }
+            }
             Ok(loki_core::output::format_elements(&elements, cli.format))
         }
 
@@ -948,6 +970,189 @@ async fn run(cli: &Cli, driver: &MacOSDriver) -> Result<String, loki_core::LokiE
             Ok(loki_core::output::format_windows(&[info], cli.format))
         }
     }
+}
+
+/// Turn an empty `find` result into something diagnosable. The whole point of
+/// mesa 550 is that "no match" and "wrong query" printed the same four words,
+/// so this reports what was actually searched and which *relaxation* of the
+/// query would have hit — which is what separates a typo from an absent
+/// element. Same shape as `explain_wait_window_timeout`.
+///
+/// The named causes it has to distinguish: wrong `--role`, wrong window,
+/// element not rendered yet, and an out-of-range `--index` (which silently
+/// empties a result set that did match).
+async fn explain_empty_find(
+    driver: &MacOSDriver,
+    window: &loki_core::WindowRef,
+    query: &ElementQuery,
+) -> String {
+    // The tree as it stands, unfiltered — an empty default query matches every
+    // node, so this is the denominator every line below is measured against.
+    let all = driver
+        .find_elements(window, &ElementQuery::default())
+        .await
+        .unwrap_or_default();
+
+    let mut wanted = Vec::new();
+    if let Some(ref r) = query.role {
+        wanted.push(format!("role {r:?}"));
+    }
+    if let Some(ref t) = query.title {
+        wanted.push(format!("title {t:?}"));
+    }
+    if let Some(ref l) = query.label {
+        wanted.push(format!("label {l:?}"));
+    }
+    if let Some(ref i) = query.identifier {
+        wanted.push(format!("id {i:?}"));
+    }
+    if let Some(idx) = query.index {
+        wanted.push(format!("index {idx}"));
+    }
+    let wanted = if wanted.is_empty() {
+        "any element".to_string()
+    } else {
+        wanted.join(" + ")
+    };
+
+    let mut lines = vec![
+        format!("no element matched {wanted}"),
+        format!(
+            "  searched: {} elements in window {} (pid {})",
+            all.len(),
+            window.window_id,
+            window.pid
+        ),
+    ];
+
+    if all.is_empty() {
+        // Either the wrong window id, or a webview: both look like this.
+        lines.push(
+            "  the window's tree is empty — wrong window id, or a WKWebView/Electron UI \
+             that the AX API does not expose (screenshot + coordinate clicks instead)"
+                .to_string(),
+        );
+        return lines.join("\n");
+    }
+
+    // --index is applied *after* filtering, so an out-of-range index empties a
+    // result set that matched perfectly well. Report the count it should use.
+    let without_index = ElementQuery {
+        index: None,
+        ..query.clone()
+    };
+    if query.index.is_some() {
+        let n = all.iter().filter(|e| without_index.matches(e)).count();
+        if n > 0 {
+            lines.push(format!(
+                "  {n} element(s) matched the rest of the query — --index is 0-based, so the \
+                 highest valid one here is {}",
+                n - 1
+            ));
+            return lines.join("\n");
+        }
+    }
+
+    let has_text = query.title.is_some() || query.label.is_some() || query.identifier.is_some();
+
+    // Relax the role: if the text alone hits, the role was the wrong guess —
+    // the ticket's first named cause, and invisible in the old output.
+    if query.role.is_some() && has_text {
+        let relaxed = ElementQuery {
+            role: None,
+            index: None,
+            ..query.clone()
+        };
+        let hits: Vec<&loki_core::AXElement> = all.iter().filter(|e| relaxed.matches(e)).collect();
+        if !hits.is_empty() {
+            let mut roles: Vec<String> = hits.iter().map(|e| e.role.clone()).collect();
+            roles.sort();
+            roles.dedup();
+            lines.push(format!(
+                "  {} element(s) matched the text but not the role — they are: {}",
+                hits.len(),
+                roles.join(", ")
+            ));
+            return lines.join("\n");
+        }
+    }
+
+    // Role given, nothing matched it at all: name the roles that do exist.
+    if query.role.is_some() {
+        let matched_role = ElementQuery {
+            role: query.role.clone(),
+            ..Default::default()
+        };
+        if !all.iter().any(|e| matched_role.matches(e)) {
+            let mut roles: Vec<String> = all.iter().map(|e| e.role.clone()).collect();
+            roles.sort();
+            roles.dedup();
+            let shown = roles.len().min(12);
+            lines.push(format!(
+                "  no element has that role; roles present: {}{}",
+                roles[..shown].join(", "),
+                if roles.len() > shown { ", …" } else { "" }
+            ));
+            return lines.join("\n");
+        }
+    }
+
+    // Text given and nothing matched: is the needle in the tree at all, under
+    // a field this query does not look at? `--title` is a strict field match
+    // where `--label` is the broad one, so this is where that mix-up shows up.
+    if has_text {
+        let needle = query
+            .title
+            .as_deref()
+            .or(query.label.as_deref())
+            .or(query.identifier.as_deref())
+            .unwrap_or_default()
+            .trim_matches('*')
+            .to_lowercase();
+        if !needle.is_empty() {
+            let near: Vec<String> = all
+                .iter()
+                .filter(|e| {
+                    [&e.title, &e.value, &e.description, &e.identifier]
+                        .iter()
+                        .any(|f| {
+                            f.as_deref()
+                                .is_some_and(|s| s.to_lowercase().contains(&needle))
+                        })
+                })
+                .take(3)
+                .map(|e| {
+                    let label = e
+                        .title
+                        .as_deref()
+                        .filter(|s| !s.is_empty())
+                        .or(e.value.as_deref())
+                        .or(e.description.as_deref())
+                        .unwrap_or("");
+                    format!("{} {label:?}", e.role)
+                })
+                .collect();
+            if near.is_empty() {
+                lines.push(format!(
+                    "  no element's text contains {needle:?} — matching is case-insensitive, \
+                     so this is not a case problem (--id stays exact); the element may not be \
+                     rendered yet: `wait-for` instead of `find`"
+                ));
+            } else {
+                lines.push(format!(
+                    "  near-miss (some text field contains {needle:?}): {}",
+                    near.join(", ")
+                ));
+                lines.push(
+                    "  hint: --title matches title/description/identifier; --label also \
+                     matches AXValue (webview text)"
+                        .to_string(),
+                );
+            }
+        }
+    }
+
+    lines.join("\n")
 }
 
 /// Turn a `wait-window` timeout into something diagnosable: the glob actually

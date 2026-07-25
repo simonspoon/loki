@@ -137,6 +137,40 @@ Filters:
 - `--id` matches the accessibility identifier — an **exact, case-sensitive**
   compare, never a glob
 - `--index` selects the Nth match (0-based)
+- `--require-match` exits 1 when nothing matched, instead of exiting 0 with an
+  empty result
+
+### When nothing matches
+
+`find` exits **0** on an empty result by default, so a script that asserts
+absence (`find … | jq length` = 0) keeps working. What it no longer does is
+print the same four words for every cause — the text output now names what was
+searched and which relaxation of the query *would* have hit:
+
+```console
+$ loki find 3408 --role AXButton --title bold
+No elements found: no element matched role "AXButton" + title "bold"
+  searched: 47 elements in window 3408 (pid 39658)
+  1 element(s) matched the text but not the role — they are: AXCheckBox
+```
+
+It distinguishes the four causes that used to look identical: wrong `--role`
+(above), wrong window (`searched: 0 elements`, which also covers a WKWebView
+UI the AX API doesn't expose), an out-of-range `--index` (reports how many
+matched the rest of the query), and text that exists but under a field this
+query doesn't read (`--title` is title/description/identifier; `--label` also
+reads `AXValue`).
+
+Pass `--require-match` when a miss is a failure — the same diagnostic goes to
+stderr and the command exits 1, so a mistyped query stops the script instead of
+reading as an app bug:
+
+```bash
+loki find "$WINDOW" --role AXButton --title "Submit" --require-match || exit 1
+```
+
+`-f json` is unaffected on the default path: an empty result is still `[]`.
+Under `--require-match` the diagnostic is an error on stderr in both formats.
 
 ### Case sensitivity
 
@@ -556,6 +590,15 @@ if [ "$(echo "$ELEMENTS" | jq length)" -gt 0 ]; then
 else
   echo "FAIL: Success message not found"
 fi
+```
+
+This pattern is why `find` still exits 0 on an empty result: an empty match is
+the *answer* here, not an error, and `set -e` would kill the script at the
+assignment before the `else` branch ever ran. When a miss really is a failure,
+say so explicitly and let the exit code carry it:
+
+```bash
+loki find "$WINDOW" --role AXStaticText --title "Success" --require-match
 ```
 
 ### Verify a radio-style menu group

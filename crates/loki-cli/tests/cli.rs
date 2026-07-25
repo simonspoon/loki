@@ -50,6 +50,21 @@ fn test_find_help_shows_label() {
         .stdout(predicate::str::contains("--label"));
 }
 
+// Assert at the CLI layer, not on a helper: clap can reject a flag before any
+// code under test runs, so a unit test of the diagnostic would pass even if
+// `--require-match` were never wired up.
+#[test]
+fn test_find_help_shows_require_match() {
+    loki()
+        .args(["find", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--require-match"))
+        .stdout(predicate::str::contains(
+            "Exit 1 when the query matches nothing",
+        ));
+}
+
 #[test]
 fn test_click_element_help_shows_label() {
     loki()
@@ -726,5 +741,53 @@ fn test_click_with_pid_activates_app() {
             ])
             .assert()
             .success();
+    }
+}
+
+#[test]
+#[ignore]
+fn test_find_require_match_exit_codes() {
+    // mesa 550: an unmatched query used to be byte-identical to a legitimately
+    // empty one. Both halves matter — the flag must exit 1, and the default
+    // must keep exiting 0 so `find … | jq length` absence asserts survive.
+    let output = loki()
+        .args(["--format", "json", "windows"])
+        .output()
+        .unwrap();
+    let windows: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    // Not simply the first window: some system windows (Control Center) are in
+    // the CG list but have no AX window, so `find` there exits 1 for an
+    // unrelated reason and would read as this test failing.
+    let usable = windows.as_array().into_iter().flatten().find(|w| {
+        w["window_id"].as_u64().is_some_and(|id| {
+            loki()
+                .args(["find", &id.to_string()])
+                .output()
+                .is_ok_and(|o| o.status.success())
+        })
+    });
+    if let Some(first) = usable {
+        let wid = first["window_id"].as_u64().unwrap().to_string();
+        let miss = "zzz-no-such-element-xyz";
+
+        loki()
+            .args(["find", &wid, "--title", miss])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("No elements found"));
+
+        loki()
+            .args(["find", &wid, "--title", miss, "--require-match"])
+            .assert()
+            .code(1)
+            .stderr(predicate::str::contains("element not found"))
+            .stderr(predicate::str::contains("searched:"));
+
+        // `-f json` stays machine-readable on the default path.
+        loki()
+            .args(["--format", "json", "find", &wid, "--title", miss])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("[]"));
     }
 }

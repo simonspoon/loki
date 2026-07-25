@@ -38,6 +38,7 @@ loki tree <WINDOW_ID> --depth 3
 # Find and click elements
 loki find <WINDOW_ID> --role AXButton --title "7"
 loki find <WINDOW_ID> --label "Projects"          # Match any text field (great for webviews)
+loki find <WINDOW_ID> --title "Save" --require-match   # Exit 1 if it isn't there (default is exit 0 + a diagnostic)
 loki click-element <WINDOW_ID> --title "7"
 loki click-element <WINDOW_ID> --title "Add"
 loki click-element <WINDOW_ID> --title "3"
