@@ -181,6 +181,52 @@ loki click 100 200 --window <WINDOW_ID>   # Activate app by window, then click
 Use `--pid` or `--window` to ensure the target app is frontmost before clicking.
 Without these flags, the click goes to whatever window is at those coordinates.
 
+### Window-relative coordinates (`--relative`)
+
+`click`, `drag` and `wheel` take absolute screen coordinates by default. Pass
+`--relative` and the same numbers are read as offsets from the `--window`/`--pid`
+target's frame origin, so a point measured inside a window screenshot can be used
+as-is:
+
+```bash
+loki click 14 15 --window <WINDOW_ID> --relative      # 15px down from the window's top-left
+loki drag 300 12 350 42 --window <WINDOW_ID> --relative   # both endpoints are relative
+loki wheel 300 250 0,600 --window <WINDOW_ID> --relative
+```
+
+The command reports the screen coordinates it actually used alongside the input,
+so a mis-resolved origin is visible in stdout rather than only in a screenshot:
+
+```
+$ loki drag 300 12 350 42 --window 3303 --relative
+Dragged from (770, 145) to (820, 175) [relative (300, 12) → (350, 42) from window origin (470, 133)]
+```
+
+`-f json` carries both spaces: the top-level coordinates are the resolved screen
+point, and a `relative` object holds the origin and the numbers you typed. The
+`relative` key is absent without the flag, so absolute-mode output is unchanged.
+
+`--relative` needs an unambiguous frame, because resolving against the wrong
+window produces a click that lands somewhere plausible and still exits 0:
+
+- `--window <ID>` names exactly one window and always wins.
+- `--pid <PID>` works only when that app owns exactly one **on-screen** window.
+  More than one, and the command exits 1 listing the candidates:
+
+  ```
+  $ loki wheel 10 10 0,100 --pid 56373 --relative
+  error: input error: --relative: PID 56373 has 2 on-screen windows — name one with --window:
+    --window 3303 — "fixture.txt" at 520,163
+    --window 3300 — "Untitled" at 470,133
+  ```
+
+- Neither flag → exit 1. There is nothing to resolve against.
+
+Offsets larger than the window are not rejected: dragging past an edge is a
+legitimate gesture, and the origin is resolved once, before the gesture starts —
+so a `drag --relative` that moves the window still measures both endpoints from
+where the window was.
+
 ### Click a UI element
 
 Click the center of a matched element:
@@ -232,7 +278,8 @@ loki wheel 640 400 0,500 --steps 8 --delay 25       # Split across 8 wheel event
 
 `X` and `Y` are absolute screen coordinates, as with `click` and `drag`;
 `--window`/`--pid` only activate the target app, they do not change the
-coordinate space.
+coordinate space. To pass window-relative coordinates instead, add `--relative`
+(see [Window-relative coordinates](#window-relative-coordinates---relative)).
 
 The delta is a `dX,dY` pair in pixels — the same shape as `khora wheel`, and the
 same sign convention as the DOM's `WheelEvent`: **positive `dY` scrolls down,

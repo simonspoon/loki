@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `--relative` flag on `click`, `drag` and `wheel`: read `X`,`Y` as offsets from the `--window`/`--pid` target's frame origin instead of absolute screen coordinates. Driving a windowed app previously meant converting every window-relative point by hand out of `loki -f json windows` `frame.x/y` — a conversion every caller re-derived. `drag` offsets *both* endpoints, and the origin is resolved once before the gesture, so a `drag --relative` that moves the window still measures from where the window was. The command echoes the screen coordinates it actually used next to the input (`Dragged from (770, 145) to (820, 175) [relative (300, 12) → (350, 42) from window origin (470, 133)]`), and `-f json` carries both spaces — top-level coordinates are the resolved screen point, plus a `relative` object holding the origin and the numbers you typed — so a mis-resolved origin shows up in stdout rather than only in a screenshot. Without the flag the `relative` key is absent, leaving absolute-mode JSON byte-identical to before. Absolute coordinates remain the default; the flag is opt-in and `--window`/`--pid` still mean "activate this app" on their own. The frame must be unambiguous, because resolving against the wrong window lands a plausible-looking click and exits 0: `--window <ID>` names one window and wins, `--pid` resolves only when that app owns exactly one on-screen window (otherwise exit 1 listing the candidates with their `--window` ids), and `--relative` with neither flag exits 1.
+
 ## [0.4.0] - 2026-07-25
 
 ### Changed

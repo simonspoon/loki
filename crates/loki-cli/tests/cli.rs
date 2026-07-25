@@ -154,6 +154,49 @@ fn test_wheel_flags_after_negative_delta_still_parse() {
         .success();
 }
 
+// `--relative` is only useful if the *CLI* accepts it on all three coordinate
+// commands — a unit test of the offset helper passes even when clap rejects the
+// flag before that helper is ever called (the trap `-800,0` fell into above).
+// These drive the shipped binary: no target means the origin can't be resolved,
+// so each exits 1 with the actionable message and posts no event.
+#[test]
+fn test_click_relative_without_target_fails() {
+    loki()
+        .args(["click", "10", "10", "--relative"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--relative needs a frame"));
+}
+
+#[test]
+fn test_drag_relative_without_target_fails() {
+    loki()
+        .args(["drag", "10", "10", "20", "20", "--relative"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--relative needs a frame"));
+}
+
+#[test]
+fn test_wheel_relative_without_target_fails() {
+    loki()
+        .args(["wheel", "10", "10", "0,300", "--relative"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--relative needs a frame"));
+}
+
+#[test]
+fn test_relative_documented_on_all_three_commands() {
+    for cmd in ["click", "drag", "wheel"] {
+        loki()
+            .args([cmd, "--help"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("--relative"));
+    }
+}
+
 #[test]
 fn test_wheel_rejects_bare_number_delta() {
     loki()

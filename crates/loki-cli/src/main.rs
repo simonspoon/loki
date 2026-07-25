@@ -143,6 +143,10 @@ enum Command {
         /// Target window ID (activates app before clicking)
         #[arg(long)]
         window: Option<u32>,
+        /// Read X and Y as offsets from the --window/--pid target's frame origin
+        /// instead of absolute screen coordinates
+        #[arg(long)]
+        relative: bool,
     },
 
     /// Click a UI element by query
@@ -191,6 +195,10 @@ enum Command {
         /// Target window ID (activates app before dragging)
         #[arg(long)]
         window: Option<u32>,
+        /// Read both endpoints as offsets from the --window/--pid target's frame
+        /// origin instead of absolute screen coordinates
+        #[arg(long)]
+        relative: bool,
     },
 
     /// Scroll at screen coordinates with a real wheel event, e.g. `wheel 640 400 0,300`
@@ -232,6 +240,10 @@ enum Command {
         /// Target window ID (activates app before scrolling)
         #[arg(long)]
         window: Option<u32>,
+        /// Read X and Y as offsets from the --window/--pid target's frame origin
+        /// instead of absolute screen coordinates
+        #[arg(long)]
+        relative: bool,
     },
 
     /// Type a string of text (use --pid or --window to target a specific app)
@@ -572,28 +584,35 @@ async fn run(cli: &Cli, driver: &MacOSDriver) -> Result<String, loki_core::LokiE
             right,
             pid,
             window,
+            relative,
         } => {
             let target_pid = resolve_target_pid(driver, *pid, *window).await?;
-            driver.click(*x, *y, *double, *right, target_pid).await?;
+            let origin = resolve_relative_origin(driver, *relative, *pid, *window).await?;
+            let (sx, sy) = apply_origin(origin, *x, *y);
+            driver.click(sx, sy, *double, *right, target_pid).await?;
             match cli.format {
                 OutputFormat::Text => Ok(format!(
-                    "Clicked at ({x}, {y}){}",
+                    "Clicked at ({sx}, {sy}){}{}",
                     if *double {
                         " (double)"
                     } else if *right {
                         " (right)"
                     } else {
                         ""
-                    }
+                    },
+                    origin_suffix(origin, &[(*x, *y)])
                 )),
-                OutputFormat::Json => Ok(serde_json::to_string_pretty(&serde_json::json!({
-                    "action": "click",
-                    "x": x,
-                    "y": y,
-                    "double": double,
-                    "right": right,
-                }))
-                .unwrap()),
+                OutputFormat::Json => Ok(json_with_relative(
+                    serde_json::json!({
+                        "action": "click",
+                        "x": sx,
+                        "y": sy,
+                        "double": double,
+                        "right": right,
+                    }),
+                    origin,
+                    serde_json::json!({ "x": x, "y": y }),
+                )),
             }
         }
 
@@ -625,21 +644,34 @@ async fn run(cli: &Cli, driver: &MacOSDriver) -> Result<String, loki_core::LokiE
             delay,
             pid,
             window,
+            relative,
         } => {
             let target_pid = resolve_target_pid(driver, *pid, *window).await?;
+            let origin = resolve_relative_origin(driver, *relative, *pid, *window).await?;
+            let (sx1, sy1) = apply_origin(origin, *x1, *y1);
+            let (sx2, sy2) = apply_origin(origin, *x2, *y2);
             driver
-                .drag((*x1, *y1), (*x2, *y2), *steps, *delay, target_pid)
+                .drag((sx1, sy1), (sx2, sy2), *steps, *delay, target_pid)
                 .await?;
             match cli.format {
-                OutputFormat::Text => Ok(format!("Dragged from ({x1}, {y1}) to ({x2}, {y2})")),
-                OutputFormat::Json => Ok(serde_json::to_string_pretty(&serde_json::json!({
-                    "action": "drag",
-                    "from": { "x": x1, "y": y1 },
-                    "to": { "x": x2, "y": y2 },
-                    "steps": steps,
-                    "delay": delay,
-                }))
-                .unwrap()),
+                OutputFormat::Text => Ok(format!(
+                    "Dragged from ({sx1}, {sy1}) to ({sx2}, {sy2}){}",
+                    origin_suffix(origin, &[(*x1, *y1), (*x2, *y2)])
+                )),
+                OutputFormat::Json => Ok(json_with_relative(
+                    serde_json::json!({
+                        "action": "drag",
+                        "from": { "x": sx1, "y": sy1 },
+                        "to": { "x": sx2, "y": sy2 },
+                        "steps": steps,
+                        "delay": delay,
+                    }),
+                    origin,
+                    serde_json::json!({
+                        "from": { "x": x1, "y": y1 },
+                        "to": { "x": x2, "y": y2 },
+                    }),
+                )),
             }
         }
 
@@ -651,22 +683,31 @@ async fn run(cli: &Cli, driver: &MacOSDriver) -> Result<String, loki_core::LokiE
             delay,
             pid,
             window,
+            relative,
         } => {
             let (dx, dy) = parse_wheel_delta(delta)?;
             let target_pid = resolve_target_pid(driver, *pid, *window).await?;
+            let origin = resolve_relative_origin(driver, *relative, *pid, *window).await?;
+            let (sx, sy) = apply_origin(origin, *x, *y);
             driver
-                .wheel((*x, *y), (dx, dy), *steps, *delay, target_pid)
+                .wheel((sx, sy), (dx, dy), *steps, *delay, target_pid)
                 .await?;
             match cli.format {
-                OutputFormat::Text => Ok(format!("Scrolled ({dx}, {dy}) at ({x}, {y})")),
-                OutputFormat::Json => Ok(serde_json::to_string_pretty(&serde_json::json!({
-                    "action": "wheel",
-                    "at": { "x": x, "y": y },
-                    "delta": { "dx": dx, "dy": dy },
-                    "steps": steps,
-                    "delay": delay,
-                }))
-                .unwrap()),
+                OutputFormat::Text => Ok(format!(
+                    "Scrolled ({dx}, {dy}) at ({sx}, {sy}){}",
+                    origin_suffix(origin, &[(*x, *y)])
+                )),
+                OutputFormat::Json => Ok(json_with_relative(
+                    serde_json::json!({
+                        "action": "wheel",
+                        "at": { "x": sx, "y": sy },
+                        "delta": { "dx": dx, "dy": dy },
+                        "steps": steps,
+                        "delay": delay,
+                    }),
+                    origin,
+                    serde_json::json!({ "at": { "x": x, "y": y } }),
+                )),
             }
         }
 
@@ -951,6 +992,130 @@ fn parse_wheel_delta(delta: &str) -> Result<(i32, i32), loki_core::LokiError> {
     ))
 }
 
+/// Resolve the frame origin `--relative` coordinates are measured from.
+///
+/// `None` when the flag is off — callers then use the coordinates as given.
+/// The target must be unambiguous: a wrong origin produces a click that lands
+/// somewhere plausible and still exits 0, which is the failure shape loki keeps
+/// paying for. `--window` names exactly one window and always wins; `--pid` is
+/// only usable when the app owns exactly one on-screen window.
+async fn resolve_relative_origin(
+    driver: &MacOSDriver,
+    relative: bool,
+    pid: Option<u32>,
+    window_id: Option<u32>,
+) -> Result<Option<(f64, f64)>, loki_core::LokiError> {
+    if !relative {
+        return Ok(None);
+    }
+
+    if let Some(wid) = window_id {
+        let filter = WindowFilter {
+            include_unnamed: true,
+            ..Default::default()
+        };
+        let info = driver
+            .list_windows(&filter)
+            .await?
+            .into_iter()
+            .find(|w| w.window_id == wid)
+            .ok_or_else(|| loki_core::LokiError::WindowNotFound(format!("window_id={wid}")))?;
+        return Ok(Some((info.frame.x, info.frame.y)));
+    }
+
+    let Some(p) = pid else {
+        return Err(loki_core::LokiError::InputError(
+            "--relative needs a frame to resolve against — pass --window <ID> (or --pid <PID> for a single-window app)".into(),
+        ));
+    };
+
+    let filter = WindowFilter {
+        pid: Some(p),
+        include_unnamed: true,
+        ..Default::default()
+    };
+    let mut windows: Vec<_> = driver
+        .list_windows(&filter)
+        .await?
+        .into_iter()
+        .filter(|w| w.is_on_screen)
+        .collect();
+
+    match windows.len() {
+        1 => {
+            let w = windows.remove(0);
+            Ok(Some((w.frame.x, w.frame.y)))
+        }
+        0 => Err(loki_core::LokiError::InputError(format!(
+            "--relative: PID {p} has no on-screen window to resolve coordinates against"
+        ))),
+        n => {
+            let candidates = windows
+                .iter()
+                .map(|w| {
+                    let title = if w.title.is_empty() {
+                        "<untitled>"
+                    } else {
+                        &w.title
+                    };
+                    format!(
+                        "  --window {} — \"{}\" at {},{}",
+                        w.window_id, title, w.frame.x, w.frame.y
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            Err(loki_core::LokiError::InputError(format!(
+                "--relative: PID {p} has {n} on-screen windows — name one with --window:\n{candidates}"
+            )))
+        }
+    }
+}
+
+/// Offset a point by a `--relative` origin, or pass it through unchanged.
+fn apply_origin(origin: Option<(f64, f64)>, x: f64, y: f64) -> (f64, f64) {
+    match origin {
+        Some((ox, oy)) => (ox + x, oy + y),
+        None => (x, y),
+    }
+}
+
+/// Attach the `relative` block (origin + the coordinates as typed) to a JSON
+/// payload whose top-level coordinates are the resolved screen point.
+///
+/// The key is *absent* without `--relative` rather than null: absolute mode is
+/// the default and its output shape must stay exactly what existing consumers
+/// already parse.
+fn json_with_relative(
+    mut payload: serde_json::Value,
+    origin: Option<(f64, f64)>,
+    input: serde_json::Value,
+) -> String {
+    if let (Some((ox, oy)), Some(obj)) = (origin, payload.as_object_mut()) {
+        let mut relative = serde_json::json!({ "origin": { "x": ox, "y": oy } });
+        if let (Some(rel), Some(input)) = (relative.as_object_mut(), input.as_object()) {
+            rel.extend(input.clone());
+        }
+        obj.insert("relative".into(), relative);
+    }
+    serde_json::to_string_pretty(&payload).unwrap()
+}
+
+/// Echo the window-relative input alongside the screen coordinates actually
+/// used, so a mis-resolved origin is visible in stdout rather than only in a
+/// screenshot.
+fn origin_suffix(origin: Option<(f64, f64)>, points: &[(f64, f64)]) -> String {
+    let Some((ox, oy)) = origin else {
+        return String::new();
+    };
+    let pts = points
+        .iter()
+        .map(|(x, y)| format!("({x}, {y})"))
+        .collect::<Vec<_>>()
+        .join(" → ");
+    format!(" [relative {pts} from window origin ({ox}, {oy})]")
+}
+
 /// Resolve a target PID from --pid or --window flags.
 /// Returns Some(pid) if either is specified, None otherwise (uses focused app).
 async fn resolve_target_pid(
@@ -1009,6 +1174,64 @@ mod tests {
         // Ambiguous between axes — must not silently be read as vertical.
         let err = parse_wheel_delta("300").unwrap_err().to_string();
         assert!(err.contains("dX,dY"), "unhelpful error: {err}");
+    }
+
+    #[test]
+    fn test_apply_origin_offsets_both_axes() {
+        assert_eq!(
+            apply_origin(Some((1200.0, 80.0)), 100.0, 50.0),
+            (1300.0, 130.0)
+        );
+    }
+
+    #[test]
+    fn test_apply_origin_passthrough_when_absolute() {
+        assert_eq!(apply_origin(None, 100.0, 50.0), (100.0, 50.0));
+    }
+
+    #[test]
+    fn test_apply_origin_handles_negative_origin() {
+        // A display left of the primary has a negative origin.
+        assert_eq!(
+            apply_origin(Some((-1440.0, 0.0)), 10.0, 20.0),
+            (-1430.0, 20.0)
+        );
+    }
+
+    #[test]
+    fn test_json_omits_relative_key_when_absolute() {
+        // Absolute mode's output shape must not change at all.
+        let out = json_with_relative(
+            serde_json::json!({ "action": "click", "x": 1.0 }),
+            None,
+            serde_json::json!({ "x": 1.0 }),
+        );
+        assert!(!out.contains("relative"), "unexpected key: {out}");
+    }
+
+    #[test]
+    fn test_json_carries_origin_and_input_when_relative() {
+        let out = json_with_relative(
+            serde_json::json!({ "action": "click", "x": 620.0, "y": 183.0 }),
+            Some((520.0, 163.0)),
+            serde_json::json!({ "x": 100.0, "y": 20.0 }),
+        );
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["x"], 620.0, "top level stays the screen point: {out}");
+        assert_eq!(v["relative"]["origin"]["x"], 520.0);
+        assert_eq!(v["relative"]["x"], 100.0);
+    }
+
+    #[test]
+    fn test_origin_suffix_empty_when_absolute() {
+        assert_eq!(origin_suffix(None, &[(1.0, 2.0)]), "");
+    }
+
+    #[test]
+    fn test_origin_suffix_echoes_input_and_origin() {
+        let s = origin_suffix(Some((100.0, 20.0)), &[(5.0, 6.0), (7.0, 8.0)]);
+        assert!(s.contains("(5, 6) → (7, 8)"), "missing input points: {s}");
+        assert!(s.contains("(100, 20)"), "missing origin: {s}");
     }
 
     #[test]
