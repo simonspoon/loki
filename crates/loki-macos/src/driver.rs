@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use loki_core::{
-    AXElement, AppInfo, AppTarget, DesktopDriver, ElementQuery, LokiError, LokiResult,
-    WindowFilter, WindowInfo, WindowRef,
+    AXElement, AppInfo, AppTarget, ClickTarget, DesktopDriver, ElementQuery, LokiError, LokiResult,
+    MenuItemState, OutputFormat, WindowFilter, WindowInfo, WindowRef,
 };
 use tokio::time::{sleep, Duration, Instant};
 use tracing::debug;
@@ -58,10 +58,8 @@ impl DesktopDriver for MacOSDriver {
                 if !filter.include_unnamed && w.title.is_empty() {
                     return false;
                 }
-                if let Some(ref pat) = filter.title {
-                    if !loki_core::query::glob_matches(pat, &w.title) {
-                        return false;
-                    }
+                if !filter.matches_title(&w.title) {
+                    return false;
                 }
                 if let Some(ref bid) = filter.bundle_id {
                     match &w.bundle_id {
@@ -174,18 +172,66 @@ impl DesktopDriver for MacOSDriver {
         }
     }
 
+    async fn drag(
+        &self,
+        from: (f64, f64),
+        to: (f64, f64),
+        steps: usize,
+        delay_ms: u64,
+        pid: Option<i32>,
+    ) -> LokiResult<()> {
+        // A raw mouse event carries no activation, and an inactive app drops the
+        // whole gesture without erroring — so activate before the press, not after.
+        if let Some(p) = pid {
+            app::activate_app(p as u32)?;
+        }
+        input::drag_from_to(from.0, from.1, to.0, to.1, steps, delay_ms)
+    }
+
+    async fn wheel(
+        &self,
+        at: (f64, f64),
+        delta: (i32, i32),
+        steps: usize,
+        delay_ms: u64,
+        pid: Option<i32>,
+    ) -> LokiResult<()> {
+        // Same activation rule as drag: a raw wheel event carries no activation,
+        // and an inactive app drops it silently.
+        if let Some(p) = pid {
+            app::activate_app(p as u32)?;
+        }
+        input::scroll_at(at.0, at.1, delta.0, delta.1, steps, delay_ms)
+    }
+
     async fn click_element(
         &self,
         window: &WindowRef,
         query: &ElementQuery,
     ) -> LokiResult<AXElement> {
         let elements = self.find_elements(window, query).await?;
-        let element = elements.into_iter().next().ok_or_else(|| {
-            LokiError::ElementNotFound(format!(
-                "no element matching query in window {}",
-                window.window_id
-            ))
-        })?;
+
+        // Not first-match: a caption sharing the button's word is matched too,
+        // and clicking it is a silent no-op indistinguishable from success.
+        let element = match loki_core::query::pick_click_target(&elements) {
+            ClickTarget::One(el) => el.clone(),
+            ClickTarget::None => {
+                return Err(LokiError::ElementNotFound(format!(
+                    "no element matching query in window {}",
+                    window.window_id
+                )))
+            }
+            ClickTarget::Ambiguous(candidates) => {
+                let listed: Vec<AXElement> = candidates.into_iter().cloned().collect();
+                return Err(LokiError::AmbiguousMatch(format!(
+                    "{} clickable elements match in window {} — narrow with --role, --title or --id, \
+                     or pin --label with a glob:\n{}",
+                    listed.len(),
+                    window.window_id,
+                    loki_core::output::format_elements(&listed, OutputFormat::Text)
+                )));
+            }
+        };
 
         let frame = element
             .frame
@@ -230,6 +276,16 @@ impl DesktopDriver for MacOSDriver {
         // so bring the target app frontmost before walking its menu bar.
         app::activate_app(pid as u32)?;
         accessibility::press_menu_path(pid, path)
+    }
+
+    async fn menu_state(&self, pid: i32, path: &[String]) -> LokiResult<MenuItemState> {
+        if !self.has_accessibility_permission() {
+            return Err(LokiError::PermissionDenied);
+        }
+        // Same lazy-build reason as press_menu: an inactive app may not have
+        // populated its menus yet, so a read would see an empty tree.
+        app::activate_app(pid as u32)?;
+        accessibility::menu_state_path(pid, path)
     }
 
     // ── Screenshot (Phase 2) ──
@@ -329,9 +385,13 @@ impl DesktopDriver for MacOSDriver {
         let mut delay = Duration::from_millis(50);
         let max_delay = Duration::from_millis(500);
 
+        // Same substring-by-default rule as `WindowFilter::matches_title`, so a
+        // window title means the same thing in every command that takes one.
+        let pattern = loki_core::query::auto_wrap_pattern(pattern);
+
         loop {
             if let Ok(info) = self.find_window_info(window).await {
-                if loki_core::query::glob_matches(pattern, &info.title) {
+                if loki_core::query::glob_matches(&pattern, &info.title) {
                     debug!(pattern, title = %info.title, "title matched");
                     return Ok(info);
                 }

@@ -94,6 +94,27 @@ pub struct AXElement {
     pub children: Vec<AXElement>,
 }
 
+/// State of one menu-bar item, read with the menu closed.
+///
+/// The menu bar hangs off the *application* element, so these never appear in a
+/// window's accessibility tree and can't be reached by `find <WID>`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MenuItemState {
+    pub title: String,
+    /// True when the item carries a mark — a checkmark, bullet, or dash.
+    pub marked: bool,
+    /// The raw mark character (`✓`, `•`, `-`), so a radio-style bullet stays
+    /// distinguishable from a checkmark. None when the item is unmarked.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mark: Option<String>,
+    pub enabled: bool,
+    /// True when the item opens a submenu rather than firing a command.
+    pub has_submenu: bool,
+    /// Immediate children, populated only for the item a query resolved to.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub children: Vec<MenuItemState>,
+}
+
 /// Lightweight reference to an element within a window's accessibility tree.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ElementRef {

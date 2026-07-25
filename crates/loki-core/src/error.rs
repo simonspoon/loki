@@ -6,6 +6,11 @@ pub enum LokiError {
     #[error("element not found: {0}")]
     ElementNotFound(String),
 
+    /// Several equally-clickable elements matched one query. Refusing beats
+    /// clicking the first hit silently — that failure looks like success.
+    #[error("ambiguous match: {0}")]
+    AmbiguousMatch(String),
+
     #[error("window not found: {0}")]
     WindowNotFound(String),
 
@@ -20,6 +25,11 @@ pub enum LokiError {
 
     #[error("timed out after {0}ms")]
     Timeout(u64),
+
+    /// A timeout that can say what it was waiting for and what it saw instead.
+    /// Same exit code as `Timeout` — callers script on 3, not on the wording.
+    #[error("timed out after {timeout_ms}ms {detail}")]
+    TimeoutDetail { timeout_ms: u64, detail: String },
 
     #[error("input error: {0}")]
     InputError(String),
@@ -39,7 +49,7 @@ impl LokiError {
     pub fn exit_code(&self) -> i32 {
         match self {
             LokiError::PermissionDenied => 2,
-            LokiError::Timeout(_) => 3,
+            LokiError::Timeout(_) | LokiError::TimeoutDetail { .. } => 3,
             _ => 1,
         }
     }
@@ -59,11 +69,20 @@ mod tests {
     #[test]
     fn test_exit_code_timeout() {
         assert_eq!(LokiError::Timeout(5000).exit_code(), 3);
+        assert_eq!(
+            LokiError::TimeoutDetail {
+                timeout_ms: 5000,
+                detail: "waiting for title glob \"*x*\"".into(),
+            }
+            .exit_code(),
+            3
+        );
     }
 
     #[test]
     fn test_exit_code_defaults_to_1() {
         assert_eq!(LokiError::ElementNotFound("x".into()).exit_code(), 1);
+        assert_eq!(LokiError::AmbiguousMatch("x".into()).exit_code(), 1);
         assert_eq!(LokiError::WindowNotFound("x".into()).exit_code(), 1);
         assert_eq!(LokiError::AppNotFound("x".into()).exit_code(), 1);
         assert_eq!(LokiError::LaunchFailed("x".into()).exit_code(), 1);

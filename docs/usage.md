@@ -71,13 +71,34 @@ List open windows, optionally filtered:
 ```bash
 loki windows                              # Named windows only
 loki windows --all                        # Include untitled windows
-loki windows --title "Calculator"         # By title glob
+loki windows --title "Calculator"         # By title (substring)
 loki windows --bundle-id com.apple.Safari # By bundle ID
 loki windows --pid 12345                  # By process ID
 ```
 
 By default, windows with empty titles (system-level helper windows) are hidden.
 Use `--all` to include them.
+
+### Window title matching
+
+`--title` matches as a **substring**, the same way `--label` does for elements:
+`--title ash-md` finds a window titled `ash-md — README.md`. A pattern carrying
+glob metacharacters is used verbatim, so you can anchor it:
+
+```bash
+loki windows --title "ash-md"      # substring   → matches "ash-md — README.md"
+loki windows --title "ash-md*"     # prefix      → matches "ash-md — README.md"
+loki windows --title "*README.md"  # suffix      → does not match "…README.md.bak"
+loki windows --title "ash-m[d]"    # whole title → matches only "ash-md"
+```
+
+Matching is **case-insensitive** (`ash-md` finds `ASH-MD`) — see [Case
+sensitivity](#case-sensitivity). Every command that takes a *window* title uses
+this identical matching — `windows`, `wait-window`, `wait-title`, and
+`screenshot --window <title>` — so if one finds a window, so do the others.
+Element queries (`find --title`, `click-element --title`, `wait-for --title`)
+are a separate, strict field match; use `--label` there for substring
+behaviour.
 
 Each window has a numeric `window_id` used by other commands.
 
@@ -113,8 +134,37 @@ Filters:
   lives in `AXValue` rather than `AXTitle`. Bare patterns are auto-wrapped as
   substring globs (`"Projects"` becomes `*Projects*`); patterns containing
   `*`, `?`, or `[` are used verbatim.
-- `--id` matches the accessibility identifier
+- `--id` matches the accessibility identifier — an **exact, case-sensitive**
+  compare, never a glob
 - `--index` selects the Nth match (0-based)
+
+### Case sensitivity
+
+**Every text match in loki is case-insensitive.** `--title`, `--label`,
+`--value`, `--description`, window `--title`, `--role`, and `menu` path levels
+all fold case, so a name typed from memory in the wrong case still finds its
+element:
+
+```bash
+loki find <WINDOW_ID> --title save      # matches an AXButton titled "Save"
+loki windows --title ash-md             # matches a window titled "ASH-MD"
+loki menu "file>open"                   # matches "File" > "Open…"
+```
+
+This is deliberate. A case-only miss returns an empty result, which is
+indistinguishable from "the element isn't there" — the failure mode that reads
+as an app bug rather than a typo.
+
+Two exceptions and one limit:
+
+- **`--id` is exact and case-sensitive.** An accessibility identifier is code,
+  not presentation, so it stays the strict escape hatch when you need to tell
+  two elements apart that differ only by case.
+- **An alphabetic character range matches both cases.** `[a-z]` also matches
+  `Q`, and `[A-Z]` also matches `q`. Numeric and symbol ranges (`[0-9]`,
+  `[!.]`) are unaffected.
+- **Folding is ASCII-only.** `café` will not match `CAFÉ`; type the accented
+  characters in the case you see them, or wildcard past them (`caf*`).
 
 ## Input
 
@@ -146,6 +196,63 @@ The `--label` flag (also supported by `find`, `wait-for`, `wait-gone`) matches
 against title, value, description, and identifier. See [Find elements](#find-elements)
 for matching rules.
 
+**Which match gets clicked.** Unlike `find`, which lists every match in tree
+order, `click-element` picks the one element a click should land on:
+
+- An **actionable** role — `AXButton`, `AXMenuItem`, `AXMenuBarItem`,
+  `AXMenuButton`, `AXPopUpButton`, `AXCheckBox`, `AXRadioButton`,
+  `AXDisclosureTriangle`, `AXLink`, `AXTextField`, `AXTextArea`, `AXComboBox` —
+  beats anything else, whatever the tree order. In a save panel `--label Save`
+  matches both the "Save As:" caption and the Save button; the button wins.
+- **Several actionable matches** → the command refuses, exits 1, and lists the
+  candidates instead of clicking one at random. Narrow with `--role`, `--title`
+  or `--id`, or pin `--label` with a glob:
+
+  ```
+  $ loki click-element 1573 --label Button
+  error: ambiguous match: 2 clickable elements match in window 1573 — narrow
+  with --role, --title or --id, or pin --label with a glob:
+  AXButton "Cancel" id=CancelButton (76x26 at 790,449) [17.0.9]
+  AXButton "Save" id=OKButton (76x26 at 872,449) [17.0.10]
+  ```
+
+- **No actionable match** → the first match in tree order is clicked, as before.
+  Webview content (Tauri/wry, Safari) is entirely `AXStaticText`, and that is the
+  case `--label` exists for.
+
+### Scroll (wheel)
+
+```bash
+loki wheel 640 400 0,300                  # Scroll down 300px at those screen coords
+loki wheel 640 400 0,-300                 # Negative dY scrolls up
+loki wheel 640 400 800,0                  # Positive dX scrolls right
+loki wheel 640 400 0,500 --window <WINDOW_ID>       # Activate the app first
+loki wheel 640 400 0,500 --steps 8 --delay 25       # Split across 8 wheel events
+```
+
+`X` and `Y` are absolute screen coordinates, as with `click` and `drag`;
+`--window`/`--pid` only activate the target app, they do not change the
+coordinate space.
+
+The delta is a `dX,dY` pair in pixels — the same shape as `khora wheel`, and the
+same sign convention as the DOM's `WheelEvent`: **positive `dY` scrolls down,
+positive `dX` scrolls right**. (Core Graphics' own wheel axes run the other way;
+loki flips them for you.) The pair is required: a bare `300` has no honest
+reading, since horizontal and vertical are equally plausible.
+
+Use this rather than `key pagedown` whenever the thing you need to scroll is a
+webview container with `overflow-y: auto` and no `tabindex`. Such a pane can
+never take focus, so the key is delivered to the document behind it, the pane
+does not move, and the screenshot comes back identical — which reads as an app
+bug rather than a driving mistake. A wheel event carries its own location, so it
+reaches whatever pane sits under `X,Y` regardless of focus.
+
+Raise `--steps` for apps whose momentum or smooth scrolling clamps a single
+large jump; the delta is split into whole-pixel increments that still sum to
+exactly what you asked for. As with `drag`, a raw wheel event does not activate
+the target app, and an inactive app can swallow the scroll without erroring —
+so pass `--window` or `--pid`.
+
 ### Type text
 
 ```bash
@@ -167,6 +274,68 @@ loki key cmd+s --window <WINDOW_ID>       # Target specific window's app
 ```
 
 Modifier names: `cmd`, `shift`, `ctrl`, `alt`/`option`.
+
+## Menu bar
+
+An app's menu bar hangs off the *application* element, not any window, so
+`tree`/`find <WINDOW_ID>` can never see it — and a coordinate `click` on an open
+menu is swallowed by its modal event loop. These two commands are the only way
+in. Both target the frontmost app unless `--pid`, `--bundle-id`, or `--window`
+is given, and both split the path on `>` (override with `--separator`).
+
+Path levels match exact-first, then case-insensitively / by substring, ignoring
+a trailing ellipsis — so `"Save As"` finds `"Save As…"`. An unmatched level
+errors with the available titles at that level.
+
+### Press an item
+
+```bash
+loki menu "File>New" --bundle-id com.apple.TextEdit
+loki menu "Format>Font>Bold" --pid <PID>
+loki menu "Edit>Select All"                # frontmost app
+loki menu "File/New" --separator /
+```
+
+### Read item state
+
+`menu-state` observes without invoking anything — it prints the item the path
+names plus its immediate children, each with its checkmark, enabled state, and
+whether it opens a submenu. Separators are omitted.
+
+```bash
+loki menu-state "View>Theme"
+```
+
+```
+Theme (submenu)
+  ✓ Light
+    Dark
+    System (disabled)
+```
+
+JSON adds the raw `mark` character, so a radio-style bullet (`•`) stays
+distinguishable from a checkmark (`✓`):
+
+```bash
+loki -f json menu-state "View>Theme"
+```
+
+```json
+{
+  "title": "Theme",
+  "marked": false,
+  "enabled": true,
+  "has_submenu": true,
+  "children": [
+    { "title": "Light", "marked": true, "mark": "✓", "enabled": true, "has_submenu": false },
+    { "title": "Dark", "marked": false, "enabled": true, "has_submenu": false }
+  ]
+}
+```
+
+Reading a leaf is safe — `menu-state "File>New"` reports the item and creates
+no document. Only a container that owns a submenu is ever opened (to populate a
+lazily-built one), and it is closed again before the command returns.
 
 ## Screenshots
 
@@ -212,6 +381,21 @@ Wait for a window to appear:
 ```bash
 loki wait-window --title "Document"
 loki wait-window --bundle-id com.apple.TextEdit --timeout 10000
+```
+
+Matching is identical to `windows --title` (substring, case-insensitive), so a
+timeout here is almost always **launch latency, not a bad pattern**. A freshly
+built or newly copied `.app` can take 15s+ to open its first window — macOS
+scans a new binary on first launch — so give the first `wait-window` after a
+rebuild `--timeout 20000` or more. The timeout error reports the glob it
+actually matched, how many windows it saw, and any near-miss — a title that
+contains what you typed but that your glob's anchoring excluded:
+
+```
+error: timed out after 800ms waiting for title glob "ASH-MD*"
+  seen: 203 windows (62 titled)
+  near-miss (contains "ASH-MD" but the glob above did not match): "the ash-md window"
+  hint: a freshly built or newly copied .app can take 15s+ to open its first window …
 ```
 
 ### Wait for title change
@@ -278,5 +462,20 @@ if [ "$(echo "$ELEMENTS" | jq length)" -gt 0 ]; then
   echo "PASS: Success message visible"
 else
   echo "FAIL: Success message not found"
+fi
+```
+
+### Verify a radio-style menu group
+
+Assert that exactly one item in a submenu is checked, and that it's the right
+one — the menu bar is invisible to `find`, so `menu-state` is the only source:
+
+```bash
+MARKED=$(loki -f json menu-state "View>Theme" --bundle-id com.example.app \
+  | jq -r '[.children[] | select(.marked) | .title] | join(",")')
+if [ "$MARKED" = "Dark" ]; then
+  echo "PASS: Dark is the only checked theme"
+else
+  echo "FAIL: expected exactly 'Dark', got '$MARKED'"
 fi
 ```

@@ -60,6 +60,118 @@ fn test_click_element_help_shows_label() {
 }
 
 #[test]
+fn test_drag_help_documents_activation_gotcha() {
+    loki()
+        .args(["drag", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--steps"))
+        .stdout(predicate::str::contains("--delay"))
+        // The silent-no-op trap this command exists to remove: a raw mouse
+        // event doesn't activate the app, so --pid/--window is load-bearing.
+        .stdout(predicate::str::contains("does NOT activate"));
+}
+
+#[test]
+fn test_drag_requires_four_coordinates() {
+    loki()
+        .args(["drag", "100", "200", "300"])
+        .assert()
+        .failure();
+}
+
+// A display left of / above the primary has a negative origin, so these are real
+// coordinates — clap would otherwise parse "-5" as an unknown flag and refuse.
+#[test]
+fn test_drag_accepts_negative_coordinates() {
+    loki()
+        .args(["drag", "-5", "-20", "100", "200", "--help"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn test_click_accepts_negative_coordinates() {
+    loki()
+        .args(["click", "-5", "-20", "--help"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn test_drag_rejects_non_numeric_coordinates() {
+    loki()
+        .args(["drag", "100", "200", "left", "200"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn test_wheel_help_documents_activation_and_sign() {
+    loki()
+        .args(["wheel", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--steps"))
+        // Same silent-no-op trap as drag: a raw wheel event carries no activation.
+        .stdout(predicate::str::contains("does NOT activate"))
+        // Sign convention is the thing a caller gets wrong first.
+        .stdout(predicate::str::contains("scrolls down"));
+}
+
+#[test]
+fn test_wheel_requires_delta() {
+    loki().args(["wheel", "640", "400"]).assert().failure();
+}
+
+// `-800,0` is scroll-left. The command's `allow_negative_numbers` does NOT cover
+// it — that only admits a leading '-' on a token parsing as a number — so clap
+// read it as the flag `-8` and scroll-left was unreachable. Guards the fix
+// (`allow_hyphen_values` on `delta`); a unit test of the parser alone never sees
+// this, because clap rejects the token before the parser is ever called.
+#[test]
+fn test_wheel_accepts_negative_dx() {
+    loki()
+        .args(["wheel", "640", "400", "-800,0", "--help"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn test_wheel_accepts_both_deltas_negative() {
+    loki()
+        .args(["wheel", "640", "400", "-800,-300", "--help"])
+        .assert()
+        .success();
+}
+
+// allow_hyphen_values on the delta must not start swallowing the flags after it.
+#[test]
+fn test_wheel_flags_after_negative_delta_still_parse() {
+    loki()
+        .args(["wheel", "640", "400", "-800,0", "--steps", "4", "--help"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn test_wheel_rejects_bare_number_delta() {
+    loki()
+        .args(["wheel", "640", "400", "300"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("dX,dY"));
+}
+
+#[test]
+fn test_wheel_rejects_non_numeric_delta() {
+    loki()
+        .args(["wheel", "640", "400", "0,down"])
+        .assert()
+        .failure();
+}
+
+#[test]
 fn test_wait_for_help_shows_label() {
     loki()
         .args(["wait-for", "--help"])
@@ -88,7 +200,67 @@ fn test_find_label_flag_parses() {
         .stderr(predicate::str::contains("--label").not());
 }
 
+// ── wait-window diagnostics (mesa 530) ──
+
+#[test]
+fn test_wait_window_timeout_explains_itself() {
+    // A bare "timed out after Nms" made a slow launch look like a matching bug.
+    // The timeout must name the glob it matched and stay on exit code 3.
+    loki()
+        .args([
+            "wait-window",
+            "--title",
+            "loki-no-such-window-530",
+            "--timeout",
+            "200",
+        ])
+        .assert()
+        .code(3)
+        .stderr(predicate::str::contains("timed out after 200ms"))
+        .stderr(predicate::str::contains(
+            "waiting for title glob \"*loki-no-such-window-530*\"",
+        ))
+        .stderr(predicate::str::contains("seen:"))
+        .stderr(predicate::str::contains("--timeout"));
+}
+
 // ── Invalid usage ──
+
+#[test]
+fn test_menu_state_help() {
+    loki()
+        .args(["menu-state", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("without pressing it"))
+        .stdout(predicate::str::contains("--bundle-id"))
+        .stdout(predicate::str::contains("--separator"));
+}
+
+#[test]
+fn test_menu_state_listed_in_help() {
+    loki()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("menu-state"));
+}
+
+#[test]
+fn test_menu_state_missing_path() {
+    loki().arg("menu-state").assert().failure();
+}
+
+#[test]
+fn test_menu_state_empty_path_rejected() {
+    // A path of only separators has no levels to walk — reject it rather than
+    // silently targeting the menu bar root.
+    loki()
+        .args(["menu-state", ">>", "--pid", "1"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("empty menu path"));
+}
 
 #[test]
 fn test_no_subcommand() {

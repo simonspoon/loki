@@ -119,12 +119,63 @@ text — window titles, AX values — must do the same. See tests in
 `ElementQuery` has separate `title` and `label` fields with intentionally
 different match semantics:
 
-- `title` matches `AXTitle` only (strict)
-- `label` matches `AXTitle`, `AXValue`, `AXDescription`, or `AXIdentifier`
-  (broad — needed for webview text in Tauri/wry and Safari, where text lives
-  in `AXValue` rather than `AXTitle`)
+- `title` matches `AXTitle`, `AXDescription`, or `AXIdentifier` — the fields
+  that carry a human-readable *label*, and no others (strict: notably **not**
+  `AXValue`)
+- `label` matches those three plus `AXValue` (broad — needed for webview text
+  in Tauri/wry and Safari, where text lives in `AXValue` rather than `AXTitle`)
 
 The CLI auto-wraps bare `--label` patterns as substring globs (`Projects` →
 `*Projects*`) but leaves patterns containing `*`, `?`, or `[` untouched. Keep
-the `title` branch strict — broadening it would silently change long-standing
-match behavior for existing scripts.
+the `title` branch strict — broadening it to `AXValue` would silently change
+long-standing match behavior for existing scripts.
+
+### Querying: case (mesa 540)
+
+`glob_matches` runs `Pattern::matches_with(.., TEXT_MATCH)` with
+`case_sensitive: false`, so **every text query folds case** — `--title`,
+`--label`, `--value`, `--description`, and window `--title`. Roles
+(`role_matches`) and `menu` path levels always did; this made the rest agree.
+
+The decision was between that and documenting case-sensitivity as intentional.
+Case-insensitive won because a case-only miss is *silent*: `find` returns "No
+elements found" at **exit 0**, which is indistinguishable from the element
+genuinely being absent, so it reads as an app bug rather than a typo. It had
+already produced one wrong bug report (mesa 530).
+
+Three things to preserve when touching this:
+
+- **`identifier` stays an exact, case-sensitive `!=` compare** and is never
+  globbed. It is the escape hatch for telling apart two elements that differ
+  only by case; don't route it through `glob_matches`.
+- **The invalid-pattern fallback must fold case too**, ASCII-only
+  (`to_ascii_lowercase`, matching the glob crate's `chars_eq`) — not
+  `to_lowercase`. If the two paths disagree, the same query means different
+  things depending on whether its pattern happened to parse as a glob.
+- **`TEXT_MATCH`'s other two fields stay `false`**, matching what
+  `Pattern::matches` uses. They are path-oriented (`require_literal_separator`,
+  `require_literal_leading_dot`) and AX titles are not paths. Note
+  `MatchOptions::default()` is *not* `MatchOptions::new()` — the derived default
+  has `case_sensitive: false`, the constructor has `true`.
+
+Two accepted costs, both from the `glob` crate: an *alphabetic* character range
+matches both cases (`[a-z]` also matches `Q`; `[0-9]` and symbol ranges are
+unaffected, guarded in `in_char_specifiers`), and folding is ASCII-only, so
+`café` still will not match `CAFÉ`.
+
+### Pitfall: never `AXPress` a menu item to probe it
+
+`menu` and `menu-state` share one walk (`accessibility::resolve_menu_path`).
+Some apps build a submenu's children only when it is opened, so the walk presses
+a container that reads empty and re-reads it. That press is safe on a *submenu*
+and catastrophic on a *leaf* — `AXPress` on `File>New` runs the command, so a
+read-only `menu-state` would create a document as a side effect of describing
+one.
+
+The guard is `owns_submenu()`: only an item with an `AXMenu` child is ever
+pressed to populate. A leaf that reads empty stays empty. `menu_state_path` also
+fires `AXCancel` on anything it had to open, so observing a menu never leaves one
+hanging open to swallow the next command's input.
+
+Note the asymmetry: `press_menu_path` needs no such cleanup, because pressing
+the leaf dismisses the whole chain on its way out.

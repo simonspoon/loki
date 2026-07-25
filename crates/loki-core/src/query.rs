@@ -1,4 +1,4 @@
-use glob::Pattern;
+use glob::{MatchOptions, Pattern};
 use serde::{Deserialize, Serialize};
 
 use crate::element::AXElement;
@@ -22,6 +22,8 @@ impl ElementQuery {
     ///
     /// All specified criteria must match (AND logic).
     /// Role matching is case-insensitive and allows with or without "AX" prefix.
+    /// Text matching (`title`, `label`, `value`, `description`) is
+    /// case-insensitive too; `identifier` is an exact, case-sensitive compare.
     pub fn matches(&self, element: &AXElement) -> bool {
         if let Some(ref role_pattern) = self.role {
             if !role_matches(role_pattern, &element.role) {
@@ -105,6 +107,70 @@ impl ElementQuery {
     }
 }
 
+/// AX roles that actually *do* something when clicked.
+///
+/// A query hitting one of these outranks a caption that merely mentions the
+/// same word: in a save panel `--label Save` matches both the "Save As:"
+/// AXStaticText and the Save AXButton, and clicking the caption is a silent
+/// no-op that looks exactly like success.
+const ACTIONABLE_ROLES: &[&str] = &[
+    "AXButton",
+    "AXMenuItem",
+    "AXMenuBarItem",
+    "AXMenuButton",
+    "AXPopUpButton",
+    "AXCheckBox",
+    "AXRadioButton",
+    "AXDisclosureTriangle",
+    "AXLink",
+    "AXTextField",
+    "AXTextArea",
+    "AXComboBox",
+];
+
+/// Whether clicking an element of this role is a meaningful action.
+pub fn is_actionable(role: &str) -> bool {
+    ACTIONABLE_ROLES.iter().any(|r| role_matches(r, role))
+}
+
+/// Which element a click should land on, given every match for a query.
+#[derive(Debug)]
+pub enum ClickTarget<'a> {
+    /// Nothing matched.
+    None,
+    /// One unambiguous target.
+    One(&'a AXElement),
+    /// Several *actionable* elements matched and there is no safe guess between
+    /// them. Carries the candidates so the caller can name them instead of
+    /// clicking a coin flip.
+    Ambiguous(Vec<&'a AXElement>),
+}
+
+/// Narrow a match list down to the one element a click should land on.
+///
+/// Actionable roles win over everything else, so a `--label Save` that hits the
+/// "Save As:" caption *and* the Save button lands on the button. Among several
+/// actionable matches there is no safe guess — the caller is told to
+/// disambiguate. When nothing actionable matched, first-match order stands:
+/// a webview's text content is all AXStaticText (see the Tauri/wry case
+/// `--label` was built for) and clicking the first hit is the established
+/// behaviour there.
+pub fn pick_click_target(matches: &[AXElement]) -> ClickTarget<'_> {
+    let actionable: Vec<&AXElement> = matches
+        .iter()
+        .filter(|e| is_actionable(&e.role))
+        .collect();
+
+    match actionable.len() {
+        0 => match matches.first() {
+            Some(el) => ClickTarget::One(el),
+            None => ClickTarget::None,
+        },
+        1 => ClickTarget::One(actionable[0]),
+        _ => ClickTarget::Ambiguous(actionable),
+    }
+}
+
 /// Check if a role pattern matches an element role.
 /// Case-insensitive, allows both "AXButton" and "button" to match "AXButton".
 fn role_matches(pattern: &str, element_role: &str) -> bool {
@@ -172,12 +238,71 @@ pub struct WindowFilter {
     pub include_unnamed: bool,
 }
 
-/// Check if a string matches a glob pattern (case-insensitive).
+impl WindowFilter {
+    /// Check a window title against this filter's title pattern.
+    ///
+    /// Window titles match as a **case-insensitive substring**: a bare
+    /// `"ash-md"` matches `"ash-md — README.md"` and `"ASH-MD"`, the same way
+    /// `--label` behaves for elements. A pattern carrying glob metacharacters
+    /// is used verbatim, so `"ash-md*"` anchors the start and `"ash-m[d]"`
+    /// pins the whole title.
+    pub fn matches_title(&self, title: &str) -> bool {
+        match self.title {
+            Some(ref pattern) => glob_matches(&auto_wrap_pattern(pattern), title),
+            None => true,
+        }
+    }
+
+    /// The glob actually used to match titles — for diagnostics, so an error
+    /// can show what was matched rather than what was typed.
+    pub fn effective_title_pattern(&self) -> Option<String> {
+        self.title.as_deref().map(auto_wrap_pattern)
+    }
+}
+
+/// Wrap a bare pattern with substring globs so `"Projects"` matches any value
+/// containing "Projects". A pattern that already carries glob metacharacters
+/// (`*`, `?`, `[`) passes through unchanged. Empty stays empty — wrapping it to
+/// `**` would match everything.
+pub fn auto_wrap_pattern(pattern: &str) -> String {
+    if pattern.is_empty() {
+        return String::new();
+    }
+    if pattern.contains('*') || pattern.contains('?') || pattern.contains('[') {
+        return pattern.to_string();
+    }
+    format!("*{pattern}*")
+}
+
+/// Match options for every text query: identical to `Pattern::matches`'s
+/// defaults except for case. The other two fields are path-oriented and stay
+/// off — AX titles are not paths.
+const TEXT_MATCH: MatchOptions = MatchOptions {
+    case_sensitive: false,
+    require_literal_separator: false,
+    require_literal_leading_dot: false,
+};
+
+/// Check if a string matches a glob pattern. **Case-insensitive** (mesa 540).
+///
+/// Titles, labels, values and descriptions are human-facing strings where case
+/// is presentation, not identity, and a case-only miss returns an empty result
+/// indistinguishable from "the element isn't there". Roles and menu paths have
+/// always folded case; this makes the rest of the tool agree with them.
+/// `--identifier` stays an exact compare — that is the strict escape hatch.
+///
+/// Two consequences of `case_sensitive: false`, both from the `glob` crate:
+/// folding is **ASCII-only**, so `é` still won't match `É`; and an *alphabetic*
+/// character range relaxes, so `[a-z]` also matches `Q`. Numeric and symbol
+/// ranges (`[0-9]`, `[!.]`) are unaffected.
 pub fn glob_matches(pattern: &str, value: &str) -> bool {
-    // Try as glob pattern first; fall back to substring match if invalid
+    // Try as glob pattern first; fall back to substring match if invalid.
+    // The fallback folds case ASCII-only too, so both paths agree.
     match Pattern::new(pattern) {
-        Ok(p) => p.matches(value),
-        Err(_) => value.contains(pattern),
+        Ok(p) => p.matches_with(value, TEXT_MATCH),
+        Err(_) => value
+            .to_ascii_lowercase()
+            .contains(&pattern.to_ascii_lowercase()),
     }
 }
 
@@ -207,6 +332,165 @@ mod tests {
     #[test]
     fn test_glob_invalid_falls_back_to_substring() {
         assert!(glob_matches("[invalid", "[invalid pattern"));
+    }
+
+    // ── Case-insensitive text matching (mesa 540) ──
+
+    #[test]
+    fn test_glob_matches_is_case_insensitive() {
+        // The reported trap: a name typed from memory in the wrong case read as
+        // "element not present" rather than "you typed it differently".
+        assert!(glob_matches("save", "Save"));
+        assert!(glob_matches("SAVE", "save"));
+        assert!(glob_matches("*ash-md*", "ASH-MD — README.md"));
+        assert!(glob_matches("Find?R", "finder"));
+        // Still a real mismatch, not a blanket yes.
+        assert!(!glob_matches("Finder", "Safari"));
+    }
+
+    #[test]
+    fn test_glob_invalid_fallback_also_folds_case() {
+        // The invalid-pattern path must agree with the glob path, or the same
+        // query means two different things depending on its metacharacters.
+        assert!(glob_matches("[INVALID", "an [invalid pattern"));
+    }
+
+    #[test]
+    fn test_glob_case_folding_is_ascii_only() {
+        // Documented limitation of the glob crate's `chars_eq`: non-ASCII case
+        // relationships are not folded. Callers matching accented titles must
+        // still type the case they see.
+        assert!(!glob_matches("café", "CAFÉ"));
+        // The ASCII half of the same string folds, so a wildcard gets there.
+        assert!(glob_matches("caf*", "CAFÉ"));
+    }
+
+    #[test]
+    fn test_glob_alphabetic_char_ranges_relax() {
+        // The known cost of `case_sensitive: false` — an alphabetic range
+        // matches both cases. Non-alphabetic ranges are unaffected.
+        assert!(glob_matches("[a-z]", "Q"));
+        assert!(glob_matches("[A-Z]", "q"));
+        assert!(!glob_matches("[0-9]", "q"));
+        assert!(glob_matches("[0-9]", "7"));
+    }
+
+    #[test]
+    fn test_identifier_stays_case_sensitive_exact() {
+        // The strict escape hatch: `--id` never globbed and never folds, so a
+        // caller who needs exact identity still has one.
+        let mut el = make_element("AXButton", Some("Save"));
+        el.identifier = Some("btn-ok".to_string());
+
+        let exact = ElementQuery {
+            identifier: Some("btn-ok".to_string()),
+            ..Default::default()
+        };
+        assert!(exact.matches(&el));
+
+        let wrong_case = ElementQuery {
+            identifier: Some("BTN-OK".to_string()),
+            ..Default::default()
+        };
+        assert!(!wrong_case.matches(&el));
+    }
+
+    #[test]
+    fn test_query_title_and_label_fold_case() {
+        let el = make_element("AXButton", Some("Save"));
+        let by_title = ElementQuery {
+            title: Some("save".to_string()),
+            ..Default::default()
+        };
+        assert!(by_title.matches(&el));
+
+        let mut webview_text = make_element("AXStaticText", None);
+        webview_text.value = Some("Settings".to_string());
+        let by_label = ElementQuery {
+            label: Some("settings".to_string()),
+            ..Default::default()
+        };
+        assert!(by_label.matches(&webview_text));
+    }
+
+    #[test]
+    fn test_query_value_and_description_fold_case() {
+        let mut el = make_element("AXStaticText", None);
+        el.value = Some("Ready".to_string());
+        el.description = Some("Status Line".to_string());
+
+        let by_value = ElementQuery {
+            value: Some("ready".to_string()),
+            ..Default::default()
+        };
+        assert!(by_value.matches(&el));
+
+        let by_desc = ElementQuery {
+            description: Some("STATUS*".to_string()),
+            ..Default::default()
+        };
+        assert!(by_desc.matches(&el));
+    }
+
+    // ── Window title matching (mesa 530) ──
+
+    fn title_filter(pattern: &str) -> WindowFilter {
+        WindowFilter {
+            title: Some(pattern.to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_window_title_matches_substring() {
+        // The reported case: a bare app name against a decorated window title.
+        assert!(title_filter("ash-md").matches_title("ash-md — README.md"));
+        assert!(title_filter("ash-md").matches_title("ash-md"));
+        assert!(!title_filter("ash-md").matches_title("Safari"));
+    }
+
+    #[test]
+    fn test_window_title_glob_passthrough_anchors() {
+        assert!(title_filter("ash-md*").matches_title("ash-md — README.md"));
+        assert!(!title_filter("*README.md").matches_title("ash-md — README.md.bak"));
+        // Metacharacters escape the auto-wrap, so a whole-title pin stays possible.
+        assert!(title_filter("ash-m[d]").matches_title("ash-md"));
+        assert!(!title_filter("ash-m[d]").matches_title("ash-md — README.md"));
+    }
+
+    #[test]
+    fn test_window_title_absent_pattern_matches_all() {
+        assert!(WindowFilter::default().matches_title("anything"));
+        assert!(WindowFilter::default().matches_title(""));
+    }
+
+    #[test]
+    fn test_window_title_is_case_insensitive() {
+        // Was the reverse until mesa 540; this exact pair (`--title ASH-MD`
+        // against a window titled `ash-md`) is what the wait-window timeout
+        // diagnostic used to have to report as a near-miss.
+        assert!(title_filter("ash-md").matches_title("ASH-MD"));
+        assert!(title_filter("ASH-MD").matches_title("ash-md — README.md"));
+        // Glob metacharacters still anchor; only case stopped mattering.
+        assert!(!title_filter("ASH-MD*").matches_title("the ash-md window"));
+    }
+
+    #[test]
+    fn test_effective_title_pattern_reports_the_wrap() {
+        assert_eq!(
+            title_filter("ash-md").effective_title_pattern().unwrap(),
+            "*ash-md*"
+        );
+        assert_eq!(
+            title_filter("ash-md*").effective_title_pattern().unwrap(),
+            "ash-md*"
+        );
+        assert_eq!(WindowFilter::default().effective_title_pattern(), None);
+    }
+
+    #[test]
+    fn test_auto_wrap_pattern_empty_stays_empty() {
+        assert_eq!(auto_wrap_pattern(""), "");
     }
 
     // ── Role matching tests ──
@@ -390,6 +674,106 @@ mod tests {
             ..Default::default()
         };
         assert!(!q.matches(&el));
+    }
+
+    // ── Click-target selection (mesa 537) ──
+
+    #[test]
+    fn test_is_actionable_covers_click_targets_not_captions() {
+        assert!(is_actionable("AXButton"));
+        assert!(is_actionable("AXMenuItem"));
+        assert!(is_actionable("AXTextField"));
+        assert!(is_actionable("AXCheckBox"));
+        // Prefix-tolerant and case-insensitive, like every other role compare.
+        assert!(is_actionable("button"));
+        // The roles that made the bug: labels, containers, decoration.
+        assert!(!is_actionable("AXStaticText"));
+        assert!(!is_actionable("AXGroup"));
+        assert!(!is_actionable("AXImage"));
+    }
+
+    fn pick_one(matches: &[AXElement]) -> &AXElement {
+        match pick_click_target(matches) {
+            ClickTarget::One(el) => el,
+            other => panic!("expected one target, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_pick_click_target_prefers_button_over_caption() {
+        // The reported case: `--label Save` in a save panel matches the
+        // "Save As:" caption first (it sits earlier in the tree) and the Save
+        // button second. Tree order must not decide this.
+        let mut caption = make_element("AXStaticText", Some("Save As:"));
+        caption.identifier = Some("nameFieldLabel".to_string());
+        let button = make_element("AXButton", Some("Save"));
+
+        let matches = [caption, button];
+        let picked = pick_one(&matches);
+        assert_eq!(picked.role, "AXButton");
+        assert_eq!(picked.title.as_deref(), Some("Save"));
+    }
+
+    #[test]
+    fn test_pick_click_target_ambiguous_actionable_refuses() {
+        // Two real buttons: no safe guess, so the caller gets the candidates
+        // rather than a silent coin flip.
+        let matches = vec![
+            make_element("AXButton", Some("Save")),
+            make_element("AXStaticText", Some("Save As:")),
+            make_element("AXButton", Some("Save All")),
+        ];
+        match pick_click_target(&matches) {
+            ClickTarget::Ambiguous(candidates) => {
+                // Only the actionable ones are offered as candidates.
+                assert_eq!(candidates.len(), 2);
+                assert!(candidates.iter().all(|c| c.role == "AXButton"));
+            }
+            other => panic!("expected ambiguity, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_pick_click_target_all_static_keeps_first_match() {
+        // Webview content (Tauri/wry, Safari) is nested AXStaticText with no
+        // actionable role anywhere — refusing here would break the flow
+        // `--label` exists for. First match still wins.
+        let mut outer = make_element("AXGroup", None);
+        outer.value = Some("Settings".to_string());
+        let mut inner = make_element("AXStaticText", None);
+        inner.value = Some("Settings".to_string());
+
+        let matches = [outer, inner];
+        let picked = pick_one(&matches);
+        assert_eq!(picked.role, "AXGroup");
+    }
+
+    #[test]
+    fn test_pick_click_target_single_match_unchanged() {
+        let matches = [make_element("AXStaticText", Some("only"))];
+        let picked = pick_one(&matches);
+        assert_eq!(picked.title.as_deref(), Some("only"));
+    }
+
+    #[test]
+    fn test_pick_click_target_empty_is_none() {
+        assert!(matches!(pick_click_target(&[]), ClickTarget::None));
+    }
+
+    #[test]
+    fn test_pick_click_target_index_query_stays_deterministic() {
+        // `--index` narrows inside search_tree to exactly one element, so the
+        // picker must pass it through even when it is a caption — the caller
+        // already chose from `find`'s tree-ordered list.
+        let tree = make_tree();
+        let q = ElementQuery {
+            role: Some("statictext".to_string()),
+            index: Some(0),
+            ..Default::default()
+        };
+        let results = search_tree(&tree, &q);
+        assert_eq!(results.len(), 1);
+        assert_eq!(pick_one(&results).role, "AXStaticText");
     }
 
     // ── search_tree tests ──

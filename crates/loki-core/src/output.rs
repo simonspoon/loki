@@ -1,4 +1,4 @@
-use crate::element::{AXElement, AppInfo, WindowInfo};
+use crate::element::{AXElement, AppInfo, MenuItemState, WindowInfo};
 
 /// Output format for CLI results.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -171,6 +171,45 @@ fn format_elements_text(elements: &[AXElement]) -> String {
     lines.join("\n")
 }
 
+/// Format a menu item and its children for display.
+pub fn format_menu_state(state: &MenuItemState, format: OutputFormat) -> String {
+    match format {
+        OutputFormat::Text => format_menu_state_text(state),
+        OutputFormat::Json => serde_json::to_string_pretty(state).unwrap_or_default(),
+    }
+}
+
+fn format_menu_state_text(state: &MenuItemState) -> String {
+    let mut lines = vec![menu_item_line(state, false)];
+    for child in &state.children {
+        lines.push(format!("  {}", menu_item_line(child, true)));
+    }
+    lines.join("\n")
+}
+
+/// One item as `<mark> <title> (<flags>)`. Children reserve a mark column so
+/// marked and unmarked siblings stay aligned — the checkmark is the whole point
+/// of this command, and a ragged left edge makes it hard to scan.
+fn menu_item_line(item: &MenuItemState, mark_column: bool) -> String {
+    let mut line = if mark_column {
+        format!("{} {}", item.mark.as_deref().unwrap_or(" "), item.title)
+    } else {
+        item.title.clone()
+    };
+
+    let mut flags = Vec::new();
+    if item.has_submenu {
+        flags.push("submenu");
+    }
+    if !item.enabled {
+        flags.push("disabled");
+    }
+    if !flags.is_empty() {
+        line.push_str(&format!(" ({})", flags.join(", ")));
+    }
+    line
+}
+
 fn truncate(s: &str, max: usize) -> String {
     if s.len() <= max {
         s.to_string()
@@ -203,6 +242,81 @@ mod tests {
             },
             is_on_screen: true,
         }
+    }
+
+    // ── Menu state ──
+
+    fn menu_item(title: &str, mark: Option<&str>, enabled: bool) -> MenuItemState {
+        MenuItemState {
+            title: title.to_string(),
+            marked: mark.is_some(),
+            mark: mark.map(str::to_string),
+            enabled,
+            has_submenu: false,
+            children: Vec::new(),
+        }
+    }
+
+    fn theme_submenu() -> MenuItemState {
+        MenuItemState {
+            has_submenu: true,
+            children: vec![
+                menu_item("Light", Some("✓"), true),
+                menu_item("Dark", None, true),
+                menu_item("System", None, false),
+            ],
+            ..menu_item("Theme", None, true)
+        }
+    }
+
+    #[test]
+    fn test_format_menu_state_text_marks_checked_child() {
+        let output = format_menu_state(&theme_submenu(), OutputFormat::Text);
+        assert!(output.contains("✓ Light"), "got:\n{output}");
+        // Unmarked siblings keep the mark column so the list stays aligned.
+        assert!(output.contains("  Dark"), "got:\n{output}");
+    }
+
+    #[test]
+    fn test_format_menu_state_text_flags_submenu_and_disabled() {
+        let output = format_menu_state(&theme_submenu(), OutputFormat::Text);
+        assert!(output.starts_with("Theme (submenu)"), "got:\n{output}");
+        assert!(output.contains("System (disabled)"), "got:\n{output}");
+        // An enabled item carries no flag suffix.
+        assert!(!output.contains("Dark ("), "got:\n{output}");
+    }
+
+    #[test]
+    fn test_format_menu_state_json_exposes_mark_and_enabled() {
+        let output = format_menu_state(&theme_submenu(), OutputFormat::Json);
+        let parsed: MenuItemState = serde_json::from_str(&output).unwrap();
+        assert_eq!(parsed.children.len(), 3);
+
+        let marked: Vec<&str> = parsed
+            .children
+            .iter()
+            .filter(|c| c.marked)
+            .map(|c| c.title.as_str())
+            .collect();
+        // The whole point of the command: assert exactly one item is checked.
+        assert_eq!(marked, ["Light"]);
+        assert_eq!(parsed.children[0].mark.as_deref(), Some("✓"));
+        assert!(!parsed.children[2].enabled);
+    }
+
+    #[test]
+    fn test_format_menu_state_json_omits_absent_mark_and_children() {
+        let output = format_menu_state(&menu_item("Dark", None, true), OutputFormat::Json);
+        assert!(!output.contains("\"mark\""), "got:\n{output}");
+        assert!(!output.contains("children"), "got:\n{output}");
+        // `marked` is not skipped — a caller can always read it as a bool.
+        assert!(output.contains("\"marked\": false"), "got:\n{output}");
+    }
+
+    #[test]
+    fn test_format_menu_state_text_leaf_has_no_children_lines() {
+        let output = format_menu_state(&menu_item("New", None, true), OutputFormat::Text);
+        assert_eq!(output, "New");
     }
 
     #[test]

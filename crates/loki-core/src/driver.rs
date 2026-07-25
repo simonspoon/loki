@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 
-use crate::element::{AXElement, AppInfo, WindowInfo, WindowRef};
+use crate::element::{AXElement, AppInfo, MenuItemState, WindowInfo, WindowRef};
 use crate::error::LokiResult;
 use crate::query::{ElementQuery, WindowFilter};
 
@@ -54,6 +54,42 @@ pub trait DesktopDriver: Send + Sync {
         pid: Option<i32>,
     ) -> LokiResult<()>;
 
+    /// Drag from one screen point to another with real OS-level mouse events
+    /// (press → `steps` intermediate moves → release), pausing `delay_ms`
+    /// between each so a controlled component can re-render mid-gesture.
+    ///
+    /// If `pid` is Some, activate that app first: a raw mouse event does not
+    /// activate the target, and an inactive app swallows the drag with no error.
+    async fn drag(
+        &self,
+        from: (f64, f64),
+        to: (f64, f64),
+        steps: usize,
+        delay_ms: u64,
+        pid: Option<i32>,
+    ) -> LokiResult<()>;
+
+    /// Scroll at absolute screen coordinates with real OS-level wheel events,
+    /// delivered as `steps` increments `delay_ms` apart.
+    ///
+    /// `delta` is `(dx, dy)` in pixels, DOM/khora convention: positive `dy`
+    /// scrolls down, positive `dx` scrolls right.
+    ///
+    /// The wheel event carries its own location, so this reaches a pane that
+    /// cannot take focus — the case `key_press("pagedown")` cannot serve, since
+    /// a key goes to the focused element and scrolls the document instead.
+    ///
+    /// If `pid` is Some, activate that app first: a raw wheel event does not
+    /// activate the target, and an inactive app swallows it with no error.
+    async fn wheel(
+        &self,
+        at: (f64, f64),
+        delta: (i32, i32),
+        steps: usize,
+        delay_ms: u64,
+        pid: Option<i32>,
+    ) -> LokiResult<()>;
+
     /// Click the center of a UI element.
     async fn click_element(
         &self,
@@ -70,6 +106,11 @@ pub trait DesktopDriver: Send + Sync {
     /// Navigate the app's menu bar (identified by `pid`) and press the item named
     /// by `path` (e.g. `["File", "Open File…"]`). Returns the pressed item.
     async fn press_menu(&self, pid: i32, path: &[String]) -> LokiResult<AXElement>;
+
+    /// Read the state of the menu item `path` names, plus its immediate
+    /// children — title, mark (checkmark/bullet), enabled, submenu-or-not.
+    /// Observes without invoking the item.
+    async fn menu_state(&self, pid: i32, path: &[String]) -> LokiResult<MenuItemState>;
 
     // ── Screenshot ──
 

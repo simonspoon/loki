@@ -9,7 +9,9 @@ description = "macOS implementation of Loki desktop automation"
 [dependencies]
 loki-core = { path = "../loki-core" }
 core-foundation = "0.10"
-core-graphics = { version = "0.25", features = ["elcapitan"] }
+# `highsierra` gates CGEventCreateScrollWheelEvent2 (`CGEvent::new_scroll_event`);
+# core-graphics feature flags do not cascade, so both must be listed.
+core-graphics = { version = "0.25", features = ["elcapitan", "highsierra"] }
 tokio = { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true }
