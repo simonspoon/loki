@@ -305,6 +305,130 @@ fn test_menu_state_empty_path_rejected() {
         .stderr(predicate::str::contains("empty menu path"));
 }
 
+// ── Targeting flags ──
+
+/// Every command that takes a target app must accept all three ways of naming
+/// one. Asserted at the CLI, not on the resolver: the bug was clap refusing the
+/// token before any code of ours ran, so a unit test on the resolver could never
+/// have seen it. A bogus bundle ID is deliberate — reaching "app not found"
+/// proves the flag parsed and was resolved, without touching a real app.
+#[test]
+fn test_bundle_id_accepted_wherever_pid_is() {
+    let invocations: &[&[&str]] = &[
+        &["key", "cmd+s"],
+        &["type", "hello"],
+        &["click", "10", "10"],
+        &["drag", "10", "10", "20", "20"],
+        &["wheel", "10", "10", "0,300"],
+        &["menu", "File"],
+        &["menu-state", "File"],
+    ];
+    for args in invocations {
+        loki()
+            .args(*args)
+            .args(["--bundle-id", "com.example.NotARealApp"])
+            .assert()
+            .failure()
+            .stderr(
+                predicate::str::contains("app not found")
+                    .and(predicate::str::contains("unexpected argument").not()),
+            );
+    }
+}
+
+/// The documented precedence is --pid, then --window, then --bundle-id. Passing
+/// two must resolve through the *earlier* one and fail there rather than falling
+/// through to the later flag — the doc and the resolver disagreed on this order
+/// once already, and nothing but a test keeps them honest.
+#[test]
+fn test_window_takes_precedence_over_bundle_id() {
+    loki()
+        .args([
+            "key",
+            "cmd+s",
+            "--window",
+            "99999999",
+            "--bundle-id",
+            "com.apple.Finder",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("window not found"));
+}
+
+#[test]
+fn test_pid_takes_precedence_over_bundle_id() {
+    loki()
+        .args([
+            "key",
+            "cmd+s",
+            "--pid",
+            "999999",
+            "--bundle-id",
+            "com.example.NotARealApp",
+        ])
+        .assert()
+        .failure()
+        // Resolution stopped at the PID; the bogus bundle ID was never consulted.
+        .stderr(predicate::str::contains("com.example.NotARealApp").not());
+}
+
+#[test]
+fn test_bundle_id_documented_on_input_commands() {
+    for cmd in ["key", "type", "click", "drag", "wheel"] {
+        loki()
+            .args([cmd, "--help"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("--bundle-id"));
+    }
+}
+
+/// `--relative` resolves its frame origin from whichever targeting flag was
+/// given, so naming the app by bundle ID has to work like naming it by PID.
+#[test]
+fn test_relative_error_offers_bundle_id() {
+    loki()
+        .args(["click", "10", "10", "--relative"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--bundle-id"));
+}
+
+/// A wrong targeting flag must say what the command *does* take — the surface
+/// isn't uniform, and the bare clap error leaves you guessing mid-script.
+#[test]
+fn test_wrong_targeting_flag_names_the_accepted_ones() {
+    loki()
+        .args(["screenshot", "--pid", "123"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "note: `loki screenshot` targets with --window",
+        ));
+}
+
+#[test]
+fn test_targeting_hint_names_a_positional_target() {
+    loki()
+        .args(["find", "--bundle-id", "com.example.NotARealApp"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "note: `loki find` targets with <WINDOW_ID>",
+        ));
+}
+
+/// The hint is scoped to targeting flags — an ordinary typo shouldn't grow one.
+#[test]
+fn test_no_targeting_hint_for_unrelated_flag() {
+    loki()
+        .args(["key", "cmd+s", "--nonsense"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("note:").not());
+}
+
 #[test]
 fn test_no_subcommand() {
     loki()

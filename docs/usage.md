@@ -168,6 +168,44 @@ Two exceptions and one limit:
 
 ## Input
 
+### Targeting an app
+
+Every input command — `click`, `drag`, `wheel`, `type`, `key` — and both menu
+commands take the same three ways of naming the app to act on:
+
+```bash
+--pid 12345                      # by process ID
+--window <WINDOW_ID>             # by window (its owning app is resolved for you)
+--bundle-id com.apple.TextEdit   # by bundle ID (resolved to a PID for you)
+```
+
+Pass more than one and they are checked in exactly that order — `--pid` wins,
+then `--window`, then `--bundle-id` — so a `--window` that names no live window
+errors rather than falling through to the `--bundle-id` beside it.
+
+Naming a target activates the app first, which is load-bearing for
+`click`/`drag`/`wheel`: a raw mouse or wheel event carries no activation and an
+inactive app can swallow the gesture without erroring. Pass none and the command
+goes to whatever app has focus (`menu` and `menu-state` fall back to the
+frontmost app).
+
+Two commands sit outside this set, and the difference is worth knowing before
+you improvise a flag mid-script:
+
+- `screenshot` takes `--window` only (a numeric ID *or* a window title).
+- `find`, `tree`, `click-element`, `wait-for`, `wait-gone` and `wait-title` take
+  a bare `<WINDOW_ID>` positional — no flag at all.
+
+Passing a flag a command doesn't have exits 2, and the error names the ones it
+does accept:
+
+```
+$ loki screenshot --pid 12345
+error: unexpected argument '--pid' found
+...
+note: `loki screenshot` targets with --window
+```
+
 ### Click at coordinates
 
 ```bash
@@ -175,18 +213,20 @@ loki click 100 200                        # Left click
 loki click 100 200 --double               # Double click
 loki click 100 200 --right                # Right click
 loki click 100 200 --pid 12345            # Activate app first, then click
+loki click 100 200 --bundle-id com.apple.TextEdit   # Same, by bundle ID
 loki click 100 200 --window <WINDOW_ID>   # Activate app by window, then click
 ```
 
-Use `--pid` or `--window` to ensure the target app is frontmost before clicking.
-Without these flags, the click goes to whatever window is at those coordinates.
+Use `--pid`, `--bundle-id` or `--window` to ensure the target app is frontmost
+before clicking (see [Targeting an app](#targeting-an-app)). Without these
+flags, the click goes to whatever window is at those coordinates.
 
 ### Window-relative coordinates (`--relative`)
 
 `click`, `drag` and `wheel` take absolute screen coordinates by default. Pass
-`--relative` and the same numbers are read as offsets from the `--window`/`--pid`
-target's frame origin, so a point measured inside a window screenshot can be used
-as-is:
+`--relative` and the same numbers are read as offsets from the
+`--window`/`--pid`/`--bundle-id` target's frame origin, so a point measured
+inside a window screenshot can be used as-is:
 
 ```bash
 loki click 14 15 --window <WINDOW_ID> --relative      # 15px down from the window's top-left
@@ -210,8 +250,9 @@ point, and a `relative` object holds the origin and the numbers you typed. The
 window produces a click that lands somewhere plausible and still exits 0:
 
 - `--window <ID>` names exactly one window and always wins.
-- `--pid <PID>` works only when that app owns exactly one **on-screen** window.
-  More than one, and the command exits 1 listing the candidates:
+- Naming the *app* — `--pid <PID>` or `--bundle-id <ID>` — works only when it
+  owns exactly one **on-screen** window. More than one, and the command exits 1
+  listing the candidates:
 
   ```
   $ loki wheel 10 10 0,100 --pid 56373 --relative
@@ -277,8 +318,8 @@ loki wheel 640 400 0,500 --steps 8 --delay 25       # Split across 8 wheel event
 ```
 
 `X` and `Y` are absolute screen coordinates, as with `click` and `drag`;
-`--window`/`--pid` only activate the target app, they do not change the
-coordinate space. To pass window-relative coordinates instead, add `--relative`
+`--window`/`--pid`/`--bundle-id` only activate the target app, they do not
+change the coordinate space. To pass window-relative coordinates instead, add `--relative`
 (see [Window-relative coordinates](#window-relative-coordinates---relative)).
 
 The delta is a `dX,dY` pair in pixels — the same shape as `khora wheel`, and the
@@ -298,7 +339,7 @@ Raise `--steps` for apps whose momentum or smooth scrolling clamps a single
 large jump; the delta is split into whole-pixel increments that still sum to
 exactly what you asked for. As with `drag`, a raw wheel event does not activate
 the target app, and an inactive app can swallow the scroll without erroring —
-so pass `--window` or `--pid`.
+so pass `--window`, `--pid` or `--bundle-id`.
 
 ### Type text
 
@@ -306,6 +347,7 @@ so pass `--window` or `--pid`.
 loki type "Hello, world"                  # Types into focused app
 loki type "Hello" --window <WINDOW_ID>    # Targets specific window's app
 loki type "Hello" --pid 12345             # Targets specific process
+loki type "Hello" --bundle-id com.apple.TextEdit   # Targets app by bundle ID
 ```
 
 Uses macOS System Events for reliable cross-process typing.
@@ -318,6 +360,8 @@ loki key cmd+shift+a                      # Cmd+Shift+A
 loki key ctrl+c                           # Ctrl+C
 loki key return                           # Enter
 loki key cmd+s --window <WINDOW_ID>       # Target specific window's app
+loki key cmd+s --pid 12345                # Target specific process
+loki key cmd+s --bundle-id com.apple.TextEdit   # Target app by bundle ID
 ```
 
 Modifier names: `cmd`, `shift`, `ctrl`, `alt`/`option`.
@@ -394,6 +438,8 @@ loki screenshot --output result.png       # Custom output path
 ```
 
 The `--window` flag accepts either a numeric window ID or a window title string.
+It is the *only* targeting flag `screenshot` takes — `--pid`/`--bundle-id` exit 2
+here; resolve the window first with `loki windows --bundle-id <ID>`.
 
 Default output: `loki-screenshot.png` in the current directory.
 

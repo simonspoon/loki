@@ -1,4 +1,5 @@
-use clap::{Parser, Subcommand};
+use clap::error::{ContextKind, ContextValue, ErrorKind};
+use clap::{CommandFactory, Parser, Subcommand};
 use loki_core::{DesktopDriver, ElementQuery, OutputFormat, WindowFilter, WindowRef};
 use loki_macos::MacOSDriver;
 use std::path::PathBuf;
@@ -140,11 +141,14 @@ enum Command {
         /// Target process ID (activates app before clicking)
         #[arg(long)]
         pid: Option<u32>,
+        /// Target bundle ID, e.g. com.apple.TextEdit (activates app before clicking)
+        #[arg(long)]
+        bundle_id: Option<String>,
         /// Target window ID (activates app before clicking)
         #[arg(long)]
         window: Option<u32>,
-        /// Read X and Y as offsets from the --window/--pid target's frame origin
-        /// instead of absolute screen coordinates
+        /// Read X and Y as offsets from the --window/--pid/--bundle-id target's
+        /// frame origin instead of absolute screen coordinates
         #[arg(long)]
         relative: bool,
     },
@@ -168,8 +172,8 @@ enum Command {
     /// Posts a real press → move → release mouse gesture at the OS event tap —
     /// the only input a divider, resizer, or slider accepts, since weaker
     /// synthetic events never get `setPointerCapture` and are ignored silently.
-    /// Pass --pid or --window: a raw mouse event does NOT activate the target
-    /// app, and an inactive app swallows the whole drag without erroring.
+    /// Pass --pid, --bundle-id or --window: a raw mouse event does NOT activate
+    /// the target app, and an inactive app swallows the whole drag without erroring.
     /// Note a resizer's grab strip often sits a few pixels beside the visible
     /// boundary line; aim at the hit target, not at what you can see.
     #[command(allow_negative_numbers = true)]
@@ -192,11 +196,14 @@ enum Command {
         /// Target process ID (activates app before dragging)
         #[arg(long)]
         pid: Option<u32>,
+        /// Target bundle ID, e.g. com.apple.TextEdit (activates app before dragging)
+        #[arg(long)]
+        bundle_id: Option<String>,
         /// Target window ID (activates app before dragging)
         #[arg(long)]
         window: Option<u32>,
-        /// Read both endpoints as offsets from the --window/--pid target's frame
-        /// origin instead of absolute screen coordinates
+        /// Read both endpoints as offsets from the --window/--pid/--bundle-id
+        /// target's frame origin instead of absolute screen coordinates
         #[arg(long)]
         relative: bool,
     },
@@ -208,8 +215,8 @@ enum Command {
     /// for a webview `overflow-y: auto` pane with no `tabindex`: the pane can
     /// never take focus, so the key scrolls the document behind it and the
     /// screenshot comes back identical, reading as an app bug.
-    /// Pass --pid or --window: a raw wheel event does NOT activate the target
-    /// app, and an inactive app swallows the scroll without erroring.
+    /// Pass --pid, --bundle-id or --window: a raw wheel event does NOT activate
+    /// the target app, and an inactive app swallows the scroll without erroring.
     #[command(allow_negative_numbers = true)]
     Wheel {
         /// X in absolute screen coordinates
@@ -237,32 +244,41 @@ enum Command {
         /// Target process ID (activates app before scrolling)
         #[arg(long)]
         pid: Option<u32>,
+        /// Target bundle ID, e.g. com.apple.TextEdit (activates app before scrolling)
+        #[arg(long)]
+        bundle_id: Option<String>,
         /// Target window ID (activates app before scrolling)
         #[arg(long)]
         window: Option<u32>,
-        /// Read X and Y as offsets from the --window/--pid target's frame origin
-        /// instead of absolute screen coordinates
+        /// Read X and Y as offsets from the --window/--pid/--bundle-id target's
+        /// frame origin instead of absolute screen coordinates
         #[arg(long)]
         relative: bool,
     },
 
-    /// Type a string of text (use --pid or --window to target a specific app)
+    /// Type a string of text (use --pid, --bundle-id or --window to target an app)
     Type {
         text: String,
         /// Target process ID
         #[arg(long)]
         pid: Option<u32>,
+        /// Target bundle ID, e.g. com.apple.TextEdit (resolves PID automatically)
+        #[arg(long)]
+        bundle_id: Option<String>,
         /// Target window ID (resolves PID automatically)
         #[arg(long)]
         window: Option<u32>,
     },
 
-    /// Press a key combination, e.g. "cmd+shift+s" (use --pid or --window to target)
+    /// Press a key combination, e.g. "cmd+shift+s" (use --pid, --bundle-id or --window)
     Key {
         combo: String,
         /// Target process ID
         #[arg(long)]
         pid: Option<u32>,
+        /// Target bundle ID, e.g. com.apple.TextEdit (resolves PID automatically)
+        #[arg(long)]
+        bundle_id: Option<String>,
         /// Target window ID (resolves PID automatically)
         #[arg(long)]
         window: Option<u32>,
@@ -380,7 +396,18 @@ async fn main() -> ExitCode {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(e) => {
+            let argv: Vec<String> = std::env::args().skip(1).collect();
+            let hint = targeting_hint(&e, &argv);
+            let _ = e.print();
+            if let Some(hint) = hint {
+                eprintln!("{hint}");
+            }
+            return ExitCode::from(e.exit_code() as u8);
+        }
+    };
     let driver = MacOSDriver::new();
 
     match run(&cli, &driver).await {
@@ -395,6 +422,63 @@ async fn main() -> ExitCode {
             ExitCode::from(e.exit_code() as u8)
         }
     }
+}
+
+/// clap arg ids that name *which app/window* a command acts on.
+const TARGETING_ARGS: &[&str] = &["pid", "bundle_id", "window", "window_id"];
+
+/// Name the targeting flags the command actually accepts, when the user guessed
+/// a wrong one.
+///
+/// clap's "unexpected argument '--bundle-id' found" says what you passed and
+/// never what the command takes, and targeting is the one place loki's surface
+/// isn't uniform: `screenshot` takes only `--window`, while `find`/`tree`/
+/// `wait-for` take a bare `<WINDOW_ID>` positional with no flag at all. The
+/// exit-2 lands mid-script, where a `$WID` capture on the next line then
+/// resolves to null and every command after it dies on an unrelated parse
+/// error — so one wrong flag reads as four broken commands. Spend the line.
+///
+/// The accepted set is read back out of clap's own command tree rather than a
+/// hand-kept list, so a flag added to a command can't leave this stale.
+fn targeting_hint(err: &clap::Error, argv: &[String]) -> Option<String> {
+    if err.kind() != ErrorKind::UnknownArgument {
+        return None;
+    }
+    let Some(ContextValue::String(invalid)) = err.get(ContextKind::InvalidArg) else {
+        return None;
+    };
+    let id = invalid
+        .trim_start_matches('-')
+        .split(['=', ' '])
+        .next()?
+        .replace('-', "_");
+    if !TARGETING_ARGS.contains(&id.as_str()) {
+        return None;
+    }
+
+    let cli = Cli::command();
+    // The subcommand always precedes its own arguments, so the first argv token
+    // clap recognises as one is the command being invoked.
+    let sub = argv.iter().find_map(|a| cli.find_subcommand(a))?;
+    let accepted: Vec<String> = sub
+        .get_arguments()
+        .filter(|a| TARGETING_ARGS.contains(&a.get_id().as_str()))
+        .map(|a| {
+            let id = a.get_id().as_str();
+            if a.is_positional() {
+                format!("<{}>", id.to_uppercase())
+            } else {
+                format!("--{}", id.replace('_', "-"))
+            }
+        })
+        .collect();
+
+    let name = sub.get_name();
+    Some(if accepted.is_empty() {
+        format!("note: `loki {name}` takes no targeting flags")
+    } else {
+        format!("note: `loki {name}` targets with {}", accepted.join(", "))
+    })
 }
 
 async fn run(cli: &Cli, driver: &MacOSDriver) -> Result<String, loki_core::LokiError> {
@@ -583,11 +667,13 @@ async fn run(cli: &Cli, driver: &MacOSDriver) -> Result<String, loki_core::LokiE
             double,
             right,
             pid,
+            bundle_id,
             window,
             relative,
         } => {
-            let target_pid = resolve_target_pid(driver, *pid, *window).await?;
-            let origin = resolve_relative_origin(driver, *relative, *pid, *window).await?;
+            let target_pid =
+                resolve_target_pid(driver, *pid, *window, bundle_id.as_deref()).await?;
+            let origin = resolve_relative_origin(driver, *relative, target_pid, *window).await?;
             let (sx, sy) = apply_origin(origin, *x, *y);
             driver.click(sx, sy, *double, *right, target_pid).await?;
             match cli.format {
@@ -643,11 +729,13 @@ async fn run(cli: &Cli, driver: &MacOSDriver) -> Result<String, loki_core::LokiE
             steps,
             delay,
             pid,
+            bundle_id,
             window,
             relative,
         } => {
-            let target_pid = resolve_target_pid(driver, *pid, *window).await?;
-            let origin = resolve_relative_origin(driver, *relative, *pid, *window).await?;
+            let target_pid =
+                resolve_target_pid(driver, *pid, *window, bundle_id.as_deref()).await?;
+            let origin = resolve_relative_origin(driver, *relative, target_pid, *window).await?;
             let (sx1, sy1) = apply_origin(origin, *x1, *y1);
             let (sx2, sy2) = apply_origin(origin, *x2, *y2);
             driver
@@ -682,12 +770,14 @@ async fn run(cli: &Cli, driver: &MacOSDriver) -> Result<String, loki_core::LokiE
             steps,
             delay,
             pid,
+            bundle_id,
             window,
             relative,
         } => {
             let (dx, dy) = parse_wheel_delta(delta)?;
-            let target_pid = resolve_target_pid(driver, *pid, *window).await?;
-            let origin = resolve_relative_origin(driver, *relative, *pid, *window).await?;
+            let target_pid =
+                resolve_target_pid(driver, *pid, *window, bundle_id.as_deref()).await?;
+            let origin = resolve_relative_origin(driver, *relative, target_pid, *window).await?;
             let (sx, sy) = apply_origin(origin, *x, *y);
             driver
                 .wheel((sx, sy), (dx, dy), *steps, *delay, target_pid)
@@ -711,8 +801,14 @@ async fn run(cli: &Cli, driver: &MacOSDriver) -> Result<String, loki_core::LokiE
             }
         }
 
-        Command::Type { text, pid, window } => {
-            let target_pid = resolve_target_pid(driver, *pid, *window).await?;
+        Command::Type {
+            text,
+            pid,
+            bundle_id,
+            window,
+        } => {
+            let target_pid =
+                resolve_target_pid(driver, *pid, *window, bundle_id.as_deref()).await?;
             driver.type_text(text, target_pid).await?;
             match cli.format {
                 OutputFormat::Text => Ok(format!("Typed: {text}")),
@@ -724,8 +820,14 @@ async fn run(cli: &Cli, driver: &MacOSDriver) -> Result<String, loki_core::LokiE
             }
         }
 
-        Command::Key { combo, pid, window } => {
-            let target_pid = resolve_target_pid(driver, *pid, *window).await?;
+        Command::Key {
+            combo,
+            pid,
+            bundle_id,
+            window,
+        } => {
+            let target_pid =
+                resolve_target_pid(driver, *pid, *window, bundle_id.as_deref()).await?;
             driver.key_press(combo, target_pid).await?;
             match cli.format {
                 OutputFormat::Text => Ok(format!("Key: {combo}")),
@@ -934,22 +1036,17 @@ async fn explain_wait_window_timeout(
     }
 }
 
-/// Resolve the app whose menu bar to walk: --pid, then --window's owner, then
-/// --bundle-id, then the frontmost app.
+/// Resolve the app whose menu bar to walk: the shared targeting flags, then the
+/// frontmost app — `menu`/`menu-state` always need *some* app, unlike the input
+/// commands where "no target" legitimately means "whatever has focus".
 async fn resolve_menu_pid(
     driver: &MacOSDriver,
     pid: Option<u32>,
     window: Option<u32>,
     bundle_id: Option<&str>,
 ) -> Result<i32, loki_core::LokiError> {
-    if let Some(p) = pid {
-        return Ok(p as i32);
-    }
-    if let Some(wid) = window {
-        return Ok(find_window_ref(driver, wid).await?.pid as i32);
-    }
-    if let Some(bid) = bundle_id {
-        return Ok(driver.app_info(bid).await?.pid as i32);
+    if let Some(p) = resolve_target_pid(driver, pid, window, bundle_id).await? {
+        return Ok(p);
     }
     Ok(loki_macos::app::frontmost_pid().ok_or_else(|| {
         loki_core::LokiError::AppNotFound(
@@ -997,12 +1094,13 @@ fn parse_wheel_delta(delta: &str) -> Result<(i32, i32), loki_core::LokiError> {
 /// `None` when the flag is off — callers then use the coordinates as given.
 /// The target must be unambiguous: a wrong origin produces a click that lands
 /// somewhere plausible and still exits 0, which is the failure shape loki keeps
-/// paying for. `--window` names exactly one window and always wins; `--pid` is
-/// only usable when the app owns exactly one on-screen window.
+/// paying for. `--window` names exactly one window and always wins; an app
+/// (named by `--pid` or `--bundle-id`, already resolved to `pid` here) is only
+/// usable when it owns exactly one on-screen window.
 async fn resolve_relative_origin(
     driver: &MacOSDriver,
     relative: bool,
-    pid: Option<u32>,
+    pid: Option<i32>,
     window_id: Option<u32>,
 ) -> Result<Option<(f64, f64)>, loki_core::LokiError> {
     if !relative {
@@ -1025,12 +1123,12 @@ async fn resolve_relative_origin(
 
     let Some(p) = pid else {
         return Err(loki_core::LokiError::InputError(
-            "--relative needs a frame to resolve against — pass --window <ID> (or --pid <PID> for a single-window app)".into(),
+            "--relative needs a frame to resolve against — pass --window <ID> (or --pid <PID> / --bundle-id <ID> for a single-window app)".into(),
         ));
     };
 
     let filter = WindowFilter {
-        pid: Some(p),
+        pid: Some(p as u32),
         include_unnamed: true,
         ..Default::default()
     };
@@ -1116,12 +1214,14 @@ fn origin_suffix(origin: Option<(f64, f64)>, points: &[(f64, f64)]) -> String {
     format!(" [relative {pts} from window origin ({ox}, {oy})]")
 }
 
-/// Resolve a target PID from --pid or --window flags.
-/// Returns Some(pid) if either is specified, None otherwise (uses focused app).
+/// Resolve a target PID from the targeting flags every input command shares:
+/// --pid, then --window's owner, then --bundle-id.
+/// Returns Some(pid) if any is specified, None otherwise (uses focused app).
 async fn resolve_target_pid(
     driver: &MacOSDriver,
     pid: Option<u32>,
     window_id: Option<u32>,
+    bundle_id: Option<&str>,
 ) -> Result<Option<i32>, loki_core::LokiError> {
     if let Some(p) = pid {
         return Ok(Some(p as i32));
@@ -1129,6 +1229,9 @@ async fn resolve_target_pid(
     if let Some(wid) = window_id {
         let wref = find_window_ref(driver, wid).await?;
         return Ok(Some(wref.pid as i32));
+    }
+    if let Some(bid) = bundle_id {
+        return Ok(Some(driver.app_info(bid).await?.pid as i32));
     }
     Ok(None)
 }

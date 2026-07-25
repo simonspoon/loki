@@ -58,7 +58,7 @@ loki wheel 640 400 800,0 --window <WINDOW_ID>      # positive dX scrolls right
 loki wheel 640 400 0,500 --window <WINDOW_ID> --steps 8   # for momentum scrollers
 
 # Coordinates measured inside a window? Add --relative and skip the conversion:
-# X,Y become offsets from the --window/--pid target's frame origin.
+# X,Y become offsets from the --window/--pid/--bundle-id target's frame origin.
 loki click 14 15 --window <WINDOW_ID> --relative
 loki drag 300 12 350 42 --window <WINDOW_ID> --relative    # both endpoints
 loki wheel 300 250 0,600 --window <WINDOW_ID> --relative
@@ -66,6 +66,10 @@ loki wheel 300 250 0,600 --window <WINDOW_ID> --relative
 # Type text and send key combos
 loki type "Hello" --window <WINDOW_ID>
 loki key cmd+a --window <WINDOW_ID>
+
+# click/drag/wheel/type/key/menu/menu-state all take the same three targeting
+# flags — --pid, --bundle-id, --window — so a bundle ID needs no WID lookup:
+loki key cmd+s --bundle-id com.apple.TextEdit
 
 # Drive the app menu bar (opens and presses the item — reaches menus that
 # live off the app, not any window, and that swallow coordinate clicks)
@@ -96,11 +100,11 @@ loki kill com.apple.Calculator
 | `windows` | List open windows (filter by title/bundle-id/pid; `--title` is a case-insensitive substring) |
 | `tree` | Dump accessibility tree for a window |
 | `find` | Find elements by role, title, label, identifier (text matching is case-insensitive; `--id` is exact) |
-| `click` | Click at screen coordinates (use --pid to target an app; `--relative` reads X,Y as window-relative) |
+| `click` | Click at screen coordinates (target with --pid/--bundle-id/--window; `--relative` reads X,Y as window-relative) |
 | `click-element` | Click a UI element by query |
 | `drag` | Drag between two screen points with real OS mouse events (dividers, resizers, sliders) |
 | `wheel` | Scroll at screen coordinates with a real wheel event — reaches panes that can't take focus |
-| `type` | Type text (use --window to target an app) |
+| `type` | Type text (target with --pid/--bundle-id/--window) |
 | `key` | Send key combo, e.g. `cmd+s`, `ctrl+shift+a` |
 | `menu` | Open and press an app menu-bar item by path, e.g. `"File>Open File…"` |
 | `menu-state` | Read a menu item + its children (checkmark, enabled, submenu) without pressing |
