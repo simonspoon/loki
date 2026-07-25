@@ -92,12 +92,13 @@ loki windows --title "*README.md"  # suffix      → does not match "…README.m
 loki windows --title "ash-m[d]"    # whole title → matches only "ash-md"
 ```
 
-Matching is **case-sensitive** (`ash-md` will not find `ASH-MD`). Every command
-that takes a *window* title uses this identical matching — `windows`,
-`wait-window`, `wait-title`, and `screenshot --window <title>` — so if one finds
-a window, so do the others. Element queries (`find --title`, `click-element
---title`, `wait-for --title`) are a separate, strict field match; use `--label`
-there for substring behaviour.
+Matching is **case-insensitive** (`ash-md` finds `ASH-MD`) — see [Case
+sensitivity](#case-sensitivity). Every command that takes a *window* title uses
+this identical matching — `windows`, `wait-window`, `wait-title`, and
+`screenshot --window <title>` — so if one finds a window, so do the others.
+Element queries (`find --title`, `click-element --title`, `wait-for --title`)
+are a separate, strict field match; use `--label` there for substring
+behaviour.
 
 Each window has a numeric `window_id` used by other commands.
 
@@ -133,8 +134,37 @@ Filters:
   lives in `AXValue` rather than `AXTitle`. Bare patterns are auto-wrapped as
   substring globs (`"Projects"` becomes `*Projects*`); patterns containing
   `*`, `?`, or `[` are used verbatim.
-- `--id` matches the accessibility identifier
+- `--id` matches the accessibility identifier — an **exact, case-sensitive**
+  compare, never a glob
 - `--index` selects the Nth match (0-based)
+
+### Case sensitivity
+
+**Every text match in loki is case-insensitive.** `--title`, `--label`,
+`--value`, `--description`, window `--title`, `--role`, and `menu` path levels
+all fold case, so a name typed from memory in the wrong case still finds its
+element:
+
+```bash
+loki find <WINDOW_ID> --title save      # matches an AXButton titled "Save"
+loki windows --title ash-md             # matches a window titled "ASH-MD"
+loki menu "file>open"                   # matches "File" > "Open…"
+```
+
+This is deliberate. A case-only miss returns an empty result, which is
+indistinguishable from "the element isn't there" — the failure mode that reads
+as an app bug rather than a typo.
+
+Two exceptions and one limit:
+
+- **`--id` is exact and case-sensitive.** An accessibility identifier is code,
+  not presentation, so it stays the strict escape hatch when you need to tell
+  two elements apart that differ only by case.
+- **An alphabetic character range matches both cases.** `[a-z]` also matches
+  `Q`, and `[A-Z]` also matches `q`. Numeric and symbol ranges (`[0-9]`,
+  `[!.]`) are unaffected.
+- **Folding is ASCII-only.** `café` will not match `CAFÉ`; type the accented
+  characters in the case you see them, or wildcard past them (`caf*`).
 
 ## Input
 
@@ -353,17 +383,18 @@ loki wait-window --title "Document"
 loki wait-window --bundle-id com.apple.TextEdit --timeout 10000
 ```
 
-Matching is identical to `windows --title` (substring, case-sensitive), so a
+Matching is identical to `windows --title` (substring, case-insensitive), so a
 timeout here is almost always **launch latency, not a bad pattern**. A freshly
 built or newly copied `.app` can take 15s+ to open its first window — macOS
 scans a new binary on first launch — so give the first `wait-window` after a
 rebuild `--timeout 20000` or more. The timeout error reports the glob it
-actually matched, how many windows it saw, and any case-insensitive near-miss:
+actually matched, how many windows it saw, and any near-miss — a title that
+contains what you typed but that your glob's anchoring excluded:
 
 ```
-error: timed out after 800ms waiting for title glob "*ASH-MD*"
+error: timed out after 800ms waiting for title glob "ASH-MD*"
   seen: 203 windows (62 titled)
-  near-miss (title matching is case-sensitive): "ash-md"
+  near-miss (contains "ASH-MD" but the glob above did not match): "the ash-md window"
   hint: a freshly built or newly copied .app can take 15s+ to open its first window …
 ```
 

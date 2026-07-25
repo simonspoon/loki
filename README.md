@@ -80,9 +80,9 @@ loki kill com.apple.Calculator
 | `launch` | Launch an app by name, bundle ID, or path |
 | `kill` | Terminate an app |
 | `app-info` | Get info about a running app (by name, bundle ID, or --pid) |
-| `windows` | List open windows (filter by title/bundle-id/pid; `--title` is a case-sensitive substring) |
+| `windows` | List open windows (filter by title/bundle-id/pid; `--title` is a case-insensitive substring) |
 | `tree` | Dump accessibility tree for a window |
-| `find` | Find elements by role, title, label, identifier |
+| `find` | Find elements by role, title, label, identifier (text matching is case-insensitive; `--id` is exact) |
 | `click` | Click at screen coordinates (use --pid to target an app) |
 | `click-element` | Click a UI element by query |
 | `drag` | Drag between two screen points with real OS mouse events (dividers, resizers, sliders) |

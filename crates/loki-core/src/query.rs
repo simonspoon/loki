@@ -1,4 +1,4 @@
-use glob::Pattern;
+use glob::{MatchOptions, Pattern};
 use serde::{Deserialize, Serialize};
 
 use crate::element::AXElement;
@@ -22,6 +22,8 @@ impl ElementQuery {
     ///
     /// All specified criteria must match (AND logic).
     /// Role matching is case-insensitive and allows with or without "AX" prefix.
+    /// Text matching (`title`, `label`, `value`, `description`) is
+    /// case-insensitive too; `identifier` is an exact, case-sensitive compare.
     pub fn matches(&self, element: &AXElement) -> bool {
         if let Some(ref role_pattern) = self.role {
             if !role_matches(role_pattern, &element.role) {
@@ -239,10 +241,11 @@ pub struct WindowFilter {
 impl WindowFilter {
     /// Check a window title against this filter's title pattern.
     ///
-    /// Window titles match as a **substring**: a bare `"ash-md"` matches
-    /// `"ash-md — README.md"`, the same way `--label` behaves for elements.
-    /// A pattern carrying glob metacharacters is used verbatim, so `"ash-md*"`
-    /// anchors the start and `"ash-m[d]"` pins the whole title.
+    /// Window titles match as a **case-insensitive substring**: a bare
+    /// `"ash-md"` matches `"ash-md — README.md"` and `"ASH-MD"`, the same way
+    /// `--label` behaves for elements. A pattern carrying glob metacharacters
+    /// is used verbatim, so `"ash-md*"` anchors the start and `"ash-m[d]"`
+    /// pins the whole title.
     pub fn matches_title(&self, title: &str) -> bool {
         match self.title {
             Some(ref pattern) => glob_matches(&auto_wrap_pattern(pattern), title),
@@ -271,12 +274,35 @@ pub fn auto_wrap_pattern(pattern: &str) -> String {
     format!("*{pattern}*")
 }
 
-/// Check if a string matches a glob pattern. Case-sensitive.
+/// Match options for every text query: identical to `Pattern::matches`'s
+/// defaults except for case. The other two fields are path-oriented and stay
+/// off — AX titles are not paths.
+const TEXT_MATCH: MatchOptions = MatchOptions {
+    case_sensitive: false,
+    require_literal_separator: false,
+    require_literal_leading_dot: false,
+};
+
+/// Check if a string matches a glob pattern. **Case-insensitive** (mesa 540).
+///
+/// Titles, labels, values and descriptions are human-facing strings where case
+/// is presentation, not identity, and a case-only miss returns an empty result
+/// indistinguishable from "the element isn't there". Roles and menu paths have
+/// always folded case; this makes the rest of the tool agree with them.
+/// `--identifier` stays an exact compare — that is the strict escape hatch.
+///
+/// Two consequences of `case_sensitive: false`, both from the `glob` crate:
+/// folding is **ASCII-only**, so `é` still won't match `É`; and an *alphabetic*
+/// character range relaxes, so `[a-z]` also matches `Q`. Numeric and symbol
+/// ranges (`[0-9]`, `[!.]`) are unaffected.
 pub fn glob_matches(pattern: &str, value: &str) -> bool {
-    // Try as glob pattern first; fall back to substring match if invalid
+    // Try as glob pattern first; fall back to substring match if invalid.
+    // The fallback folds case ASCII-only too, so both paths agree.
     match Pattern::new(pattern) {
-        Ok(p) => p.matches(value),
-        Err(_) => value.contains(pattern),
+        Ok(p) => p.matches_with(value, TEXT_MATCH),
+        Err(_) => value
+            .to_ascii_lowercase()
+            .contains(&pattern.to_ascii_lowercase()),
     }
 }
 
@@ -306,6 +332,104 @@ mod tests {
     #[test]
     fn test_glob_invalid_falls_back_to_substring() {
         assert!(glob_matches("[invalid", "[invalid pattern"));
+    }
+
+    // ── Case-insensitive text matching (mesa 540) ──
+
+    #[test]
+    fn test_glob_matches_is_case_insensitive() {
+        // The reported trap: a name typed from memory in the wrong case read as
+        // "element not present" rather than "you typed it differently".
+        assert!(glob_matches("save", "Save"));
+        assert!(glob_matches("SAVE", "save"));
+        assert!(glob_matches("*ash-md*", "ASH-MD — README.md"));
+        assert!(glob_matches("Find?R", "finder"));
+        // Still a real mismatch, not a blanket yes.
+        assert!(!glob_matches("Finder", "Safari"));
+    }
+
+    #[test]
+    fn test_glob_invalid_fallback_also_folds_case() {
+        // The invalid-pattern path must agree with the glob path, or the same
+        // query means two different things depending on its metacharacters.
+        assert!(glob_matches("[INVALID", "an [invalid pattern"));
+    }
+
+    #[test]
+    fn test_glob_case_folding_is_ascii_only() {
+        // Documented limitation of the glob crate's `chars_eq`: non-ASCII case
+        // relationships are not folded. Callers matching accented titles must
+        // still type the case they see.
+        assert!(!glob_matches("café", "CAFÉ"));
+        // The ASCII half of the same string folds, so a wildcard gets there.
+        assert!(glob_matches("caf*", "CAFÉ"));
+    }
+
+    #[test]
+    fn test_glob_alphabetic_char_ranges_relax() {
+        // The known cost of `case_sensitive: false` — an alphabetic range
+        // matches both cases. Non-alphabetic ranges are unaffected.
+        assert!(glob_matches("[a-z]", "Q"));
+        assert!(glob_matches("[A-Z]", "q"));
+        assert!(!glob_matches("[0-9]", "q"));
+        assert!(glob_matches("[0-9]", "7"));
+    }
+
+    #[test]
+    fn test_identifier_stays_case_sensitive_exact() {
+        // The strict escape hatch: `--id` never globbed and never folds, so a
+        // caller who needs exact identity still has one.
+        let mut el = make_element("AXButton", Some("Save"));
+        el.identifier = Some("btn-ok".to_string());
+
+        let exact = ElementQuery {
+            identifier: Some("btn-ok".to_string()),
+            ..Default::default()
+        };
+        assert!(exact.matches(&el));
+
+        let wrong_case = ElementQuery {
+            identifier: Some("BTN-OK".to_string()),
+            ..Default::default()
+        };
+        assert!(!wrong_case.matches(&el));
+    }
+
+    #[test]
+    fn test_query_title_and_label_fold_case() {
+        let el = make_element("AXButton", Some("Save"));
+        let by_title = ElementQuery {
+            title: Some("save".to_string()),
+            ..Default::default()
+        };
+        assert!(by_title.matches(&el));
+
+        let mut webview_text = make_element("AXStaticText", None);
+        webview_text.value = Some("Settings".to_string());
+        let by_label = ElementQuery {
+            label: Some("settings".to_string()),
+            ..Default::default()
+        };
+        assert!(by_label.matches(&webview_text));
+    }
+
+    #[test]
+    fn test_query_value_and_description_fold_case() {
+        let mut el = make_element("AXStaticText", None);
+        el.value = Some("Ready".to_string());
+        el.description = Some("Status Line".to_string());
+
+        let by_value = ElementQuery {
+            value: Some("ready".to_string()),
+            ..Default::default()
+        };
+        assert!(by_value.matches(&el));
+
+        let by_desc = ElementQuery {
+            description: Some("STATUS*".to_string()),
+            ..Default::default()
+        };
+        assert!(by_desc.matches(&el));
     }
 
     // ── Window title matching (mesa 530) ──
@@ -341,9 +465,14 @@ mod tests {
     }
 
     #[test]
-    fn test_window_title_is_case_sensitive() {
-        // Documented, and what the timeout diagnostic reports as a near-miss.
-        assert!(!title_filter("ash-md").matches_title("ASH-MD"));
+    fn test_window_title_is_case_insensitive() {
+        // Was the reverse until mesa 540; this exact pair (`--title ASH-MD`
+        // against a window titled `ash-md`) is what the wait-window timeout
+        // diagnostic used to have to report as a near-miss.
+        assert!(title_filter("ash-md").matches_title("ASH-MD"));
+        assert!(title_filter("ASH-MD").matches_title("ash-md — README.md"));
+        // Glob metacharacters still anchor; only case stopped mattering.
+        assert!(!title_filter("ASH-MD*").matches_title("the ash-md window"));
     }
 
     #[test]

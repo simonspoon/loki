@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Text matching is now case-insensitive everywhere.** `--title`, `--label`, `--value` and `--description` on `find`/`click-element`/`wait-for`/`wait-gone`, and the *window* `--title` on `windows`/`wait-window`/`wait-title`/`screenshot`, all fold case: `loki find $WID --title save` now finds an `AXButton` titled `"Save"`, and `loki windows --title ash-md` finds a window titled `"ASH-MD"`. Roles and `menu` path levels have always folded case, so the rest of the tool now agrees with them. A case-only miss used to return an empty result indistinguishable from "the element isn't there" — the failure mode that reads as an app bug rather than a typo, and which had already produced one wrong bug report. `--id` is unchanged: still an exact, case-sensitive compare, and still the escape hatch when two elements differ only by case. Two consequences of the `glob` crate's case-insensitive mode are worth knowing: an *alphabetic* character range now matches both cases (`[a-z]` also matches `Q`; `[0-9]` and symbol ranges are unaffected), and folding is ASCII-only (`café` still will not match `CAFÉ`).
+
+- `wait-window`'s timeout diagnostic no longer reports a case near-miss, since case can no longer cause a miss. The near-miss line now names what is left — a title that contains the text you typed but that your glob's anchoring or metacharacters excluded, e.g. `"ash-md*"` against `"the ash-md window"`.
+
 - Every command taking a *window* title — `windows`, `wait-window`, `wait-title`, `screenshot --window <title>` — now auto-wraps bare patterns as substring matches, the same treatment `--label` got in 0.2.2: `--title ash-md` matches a window titled `ash-md — README.md`. Explicit glob metacharacters (`*`, `?`, `[..]`) still pass through verbatim, so `--title "ash-m[d]"` pins the whole title. Element `--title` (`find`, `click-element`, `wait-for`, `wait-gone`) is unchanged and still strict.
 
 ### Fixed

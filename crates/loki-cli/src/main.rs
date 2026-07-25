@@ -48,7 +48,7 @@ enum Command {
         bundle_id: Option<String>,
         #[arg(long)]
         pid: Option<u32>,
-        /// Match the window title. Case-sensitive; supports glob metacharacters (*, ?, [..]) — without them, matches as substring.
+        /// Match the window title. Case-insensitive; supports glob metacharacters (*, ?, [..]) — without them, matches as substring.
         #[arg(long)]
         title: Option<String>,
         /// Include windows with empty titles
@@ -117,7 +117,7 @@ enum Command {
         role: Option<String>,
         #[arg(long)]
         title: Option<String>,
-        /// Match element where any text field (title, value, description, identifier) contains the pattern. Supports glob metacharacters (*, ?, [..]) — without them, matches as substring.
+        /// Match element where any text field (title, value, description, identifier) contains the pattern. Case-insensitive; supports glob metacharacters (*, ?, [..]) — without them, matches as substring.
         #[arg(long)]
         label: Option<String>,
         #[arg(long)]
@@ -152,7 +152,7 @@ enum Command {
         role: Option<String>,
         #[arg(long)]
         title: Option<String>,
-        /// Match element where any text field (title, value, description, identifier) contains the pattern. Supports glob metacharacters (*, ?, [..]) — without them, matches as substring.
+        /// Match element where any text field (title, value, description, identifier) contains the pattern. Case-insensitive; supports glob metacharacters (*, ?, [..]) — without them, matches as substring.
         #[arg(long)]
         label: Option<String>,
         #[arg(long)]
@@ -310,7 +310,7 @@ enum Command {
         role: Option<String>,
         #[arg(long)]
         title: Option<String>,
-        /// Match element where any text field (title, value, description, identifier) contains the pattern. Supports glob metacharacters (*, ?, [..]) — without them, matches as substring.
+        /// Match element where any text field (title, value, description, identifier) contains the pattern. Case-insensitive; supports glob metacharacters (*, ?, [..]) — without them, matches as substring.
         #[arg(long)]
         label: Option<String>,
         #[arg(long)]
@@ -326,7 +326,7 @@ enum Command {
         role: Option<String>,
         #[arg(long)]
         title: Option<String>,
-        /// Match element where any text field (title, value, description, identifier) contains the pattern. Supports glob metacharacters (*, ?, [..]) — without them, matches as substring.
+        /// Match element where any text field (title, value, description, identifier) contains the pattern. Case-insensitive; supports glob metacharacters (*, ?, [..]) — without them, matches as substring.
         #[arg(long)]
         label: Option<String>,
         #[arg(long)]
@@ -341,7 +341,7 @@ enum Command {
     /// latency, not a bad pattern — a freshly built `.app` can take 15s+ to open
     /// its first window because macOS scans a new binary on first launch.
     WaitWindow {
-        /// Match the window title. Case-sensitive; supports glob metacharacters (*, ?, [..]) — without them, matches as substring.
+        /// Match the window title. Case-insensitive; supports glob metacharacters (*, ?, [..]) — without them, matches as substring.
         #[arg(long)]
         title: Option<String>,
         #[arg(long)]
@@ -812,9 +812,9 @@ async fn run(cli: &Cli, driver: &MacOSDriver) -> Result<String, loki_core::LokiE
 }
 
 /// Turn a `wait-window` timeout into something diagnosable: the glob actually
-/// matched against, the window list as it stood when time ran out, any
-/// case-insensitive near-miss, and the launch-latency trap that is the usual
-/// cause (a freshly built `.app` can take well over 10s to show its window).
+/// matched against, the window list as it stood when time ran out, any loose
+/// near-miss, and the launch-latency trap that is the usual cause (a freshly
+/// built `.app` can take well over 10s to show its window).
 async fn explain_wait_window_timeout(
     driver: &MacOSDriver,
     filter: &WindowFilter,
@@ -859,17 +859,27 @@ async fn explain_wait_window_timeout(
         lines.push(format!("  {n} of them belong to {bundle_id:?}"));
     }
 
+    // Case is no longer a cause of a miss (mesa 540), so what is left is an
+    // anchoring miss: the title carries the typed text, but the glob's leading
+    // or trailing anchor excluded it — e.g. `"ash-md*"` against
+    // `"the ash-md window"`. Report the *trimmed* needle actually tested, not
+    // the raw pattern: the title does not contain the `*`.
+    //
+    // A pattern whose metacharacters are `?` or `[..]` will usually produce no
+    // near-miss at all, since those characters stay in the needle and so are
+    // themselves required to appear in the title.
     if let Some(raw) = filter.title.as_deref() {
-        let needle = raw.trim_matches('*').to_lowercase();
+        let needle = raw.trim_matches('*');
+        let lowered = needle.to_lowercase();
         let near: Vec<String> = titled
             .iter()
-            .filter(|w| w.title.to_lowercase().contains(&needle))
+            .filter(|w| w.title.to_lowercase().contains(&lowered))
             .map(|w| format!("{:?}", w.title))
             .take(3)
             .collect();
         if !near.is_empty() {
             lines.push(format!(
-                "  near-miss (title matching is case-sensitive): {}",
+                "  near-miss (contains {needle:?} but the glob above did not match): {}",
                 near.join(", ")
             ));
         }
