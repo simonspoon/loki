@@ -14,6 +14,13 @@ macOS-first. Built for CI/CD pipelines and agent workflows where you need to ver
 brew install simonspoon/tap/loki
 ```
 
+No Homebrew? Install the release binary directly:
+
+```
+curl -fsSL https://raw.githubusercontent.com/simonspoon/loki/main/install.sh | sh
+```
+
+Installs to `/usr/local/bin` (override with `LOKI_INSTALL_DIR`, pin with `LOKI_VERSION`).
 Or download from [Releases](https://github.com/simonspoon/loki/releases).
 
 ## Quick start
