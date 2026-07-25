@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `click-element` no longer clicks the first match in tree order. A query that matches both a caption and the control it labels now lands on the control: driving a save panel, `--label Save` matched the "Save As:" `AXStaticText` (`id=nameFieldLabel`) *before* the Save `AXButton`, clicked the caption, and exited 0 — a silent no-op indistinguishable from a successful save. Actionable roles (`AXButton`, `AXMenuItem`, `AXMenuBarItem`, `AXMenuButton`, `AXPopUpButton`, `AXCheckBox`, `AXRadioButton`, `AXDisclosureTriangle`, `AXLink`, `AXTextField`, `AXTextArea`, `AXComboBox`) now outrank everything else. When *several* actionable elements match there is no safe guess, so the command refuses with exit 1 and lists the candidates in `find` format rather than clicking one of them. When nothing actionable matches, first-match order still stands — a webview's text content (Tauri/wry, Safari) is all `AXStaticText`, which is the case `--label` exists for.
+
 - `wait-window` timeouts now say what they were waiting for instead of a bare `timed out after 10000ms`: the glob actually matched, how many windows were visible, how many belong to a `--bundle-id`, any case-insensitive near-miss, and the usual cause — a freshly built `.app` can take 15s+ to open its first window because macOS scans a new binary on first launch. Exit code is still 3. The bare message had made slow launches look like a matching bug between `wait-window` and `windows`, which share one code path and have never differed.
 
 ### Added

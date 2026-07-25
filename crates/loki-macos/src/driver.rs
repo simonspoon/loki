@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use loki_core::{
-    AXElement, AppInfo, AppTarget, DesktopDriver, ElementQuery, LokiError, LokiResult,
-    MenuItemState, WindowFilter, WindowInfo, WindowRef,
+    AXElement, AppInfo, AppTarget, ClickTarget, DesktopDriver, ElementQuery, LokiError, LokiResult,
+    MenuItemState, OutputFormat, WindowFilter, WindowInfo, WindowRef,
 };
 use tokio::time::{sleep, Duration, Instant};
 use tracing::debug;
@@ -210,12 +210,28 @@ impl DesktopDriver for MacOSDriver {
         query: &ElementQuery,
     ) -> LokiResult<AXElement> {
         let elements = self.find_elements(window, query).await?;
-        let element = elements.into_iter().next().ok_or_else(|| {
-            LokiError::ElementNotFound(format!(
-                "no element matching query in window {}",
-                window.window_id
-            ))
-        })?;
+
+        // Not first-match: a caption sharing the button's word is matched too,
+        // and clicking it is a silent no-op indistinguishable from success.
+        let element = match loki_core::query::pick_click_target(&elements) {
+            ClickTarget::One(el) => el.clone(),
+            ClickTarget::None => {
+                return Err(LokiError::ElementNotFound(format!(
+                    "no element matching query in window {}",
+                    window.window_id
+                )))
+            }
+            ClickTarget::Ambiguous(candidates) => {
+                let listed: Vec<AXElement> = candidates.into_iter().cloned().collect();
+                return Err(LokiError::AmbiguousMatch(format!(
+                    "{} clickable elements match in window {} — narrow with --role, --title or --id, \
+                     or pin --label with a glob:\n{}",
+                    listed.len(),
+                    window.window_id,
+                    loki_core::output::format_elements(&listed, OutputFormat::Text)
+                )));
+            }
+        };
 
         let frame = element
             .frame

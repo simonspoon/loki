@@ -166,6 +166,30 @@ The `--label` flag (also supported by `find`, `wait-for`, `wait-gone`) matches
 against title, value, description, and identifier. See [Find elements](#find-elements)
 for matching rules.
 
+**Which match gets clicked.** Unlike `find`, which lists every match in tree
+order, `click-element` picks the one element a click should land on:
+
+- An **actionable** role — `AXButton`, `AXMenuItem`, `AXMenuBarItem`,
+  `AXMenuButton`, `AXPopUpButton`, `AXCheckBox`, `AXRadioButton`,
+  `AXDisclosureTriangle`, `AXLink`, `AXTextField`, `AXTextArea`, `AXComboBox` —
+  beats anything else, whatever the tree order. In a save panel `--label Save`
+  matches both the "Save As:" caption and the Save button; the button wins.
+- **Several actionable matches** → the command refuses, exits 1, and lists the
+  candidates instead of clicking one at random. Narrow with `--role`, `--title`
+  or `--id`, or pin `--label` with a glob:
+
+  ```
+  $ loki click-element 1573 --label Button
+  error: ambiguous match: 2 clickable elements match in window 1573 — narrow
+  with --role, --title or --id, or pin --label with a glob:
+  AXButton "Cancel" id=CancelButton (76x26 at 790,449) [17.0.9]
+  AXButton "Save" id=OKButton (76x26 at 872,449) [17.0.10]
+  ```
+
+- **No actionable match** → the first match in tree order is clicked, as before.
+  Webview content (Tauri/wry, Safari) is entirely `AXStaticText`, and that is the
+  case `--label` exists for.
+
 ### Scroll (wheel)
 
 ```bash

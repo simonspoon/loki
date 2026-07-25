@@ -105,6 +105,70 @@ impl ElementQuery {
     }
 }
 
+/// AX roles that actually *do* something when clicked.
+///
+/// A query hitting one of these outranks a caption that merely mentions the
+/// same word: in a save panel `--label Save` matches both the "Save As:"
+/// AXStaticText and the Save AXButton, and clicking the caption is a silent
+/// no-op that looks exactly like success.
+const ACTIONABLE_ROLES: &[&str] = &[
+    "AXButton",
+    "AXMenuItem",
+    "AXMenuBarItem",
+    "AXMenuButton",
+    "AXPopUpButton",
+    "AXCheckBox",
+    "AXRadioButton",
+    "AXDisclosureTriangle",
+    "AXLink",
+    "AXTextField",
+    "AXTextArea",
+    "AXComboBox",
+];
+
+/// Whether clicking an element of this role is a meaningful action.
+pub fn is_actionable(role: &str) -> bool {
+    ACTIONABLE_ROLES.iter().any(|r| role_matches(r, role))
+}
+
+/// Which element a click should land on, given every match for a query.
+#[derive(Debug)]
+pub enum ClickTarget<'a> {
+    /// Nothing matched.
+    None,
+    /// One unambiguous target.
+    One(&'a AXElement),
+    /// Several *actionable* elements matched and there is no safe guess between
+    /// them. Carries the candidates so the caller can name them instead of
+    /// clicking a coin flip.
+    Ambiguous(Vec<&'a AXElement>),
+}
+
+/// Narrow a match list down to the one element a click should land on.
+///
+/// Actionable roles win over everything else, so a `--label Save` that hits the
+/// "Save As:" caption *and* the Save button lands on the button. Among several
+/// actionable matches there is no safe guess — the caller is told to
+/// disambiguate. When nothing actionable matched, first-match order stands:
+/// a webview's text content is all AXStaticText (see the Tauri/wry case
+/// `--label` was built for) and clicking the first hit is the established
+/// behaviour there.
+pub fn pick_click_target(matches: &[AXElement]) -> ClickTarget<'_> {
+    let actionable: Vec<&AXElement> = matches
+        .iter()
+        .filter(|e| is_actionable(&e.role))
+        .collect();
+
+    match actionable.len() {
+        0 => match matches.first() {
+            Some(el) => ClickTarget::One(el),
+            None => ClickTarget::None,
+        },
+        1 => ClickTarget::One(actionable[0]),
+        _ => ClickTarget::Ambiguous(actionable),
+    }
+}
+
 /// Check if a role pattern matches an element role.
 /// Case-insensitive, allows both "AXButton" and "button" to match "AXButton".
 fn role_matches(pattern: &str, element_role: &str) -> bool {
@@ -481,6 +545,106 @@ mod tests {
             ..Default::default()
         };
         assert!(!q.matches(&el));
+    }
+
+    // ── Click-target selection (mesa 537) ──
+
+    #[test]
+    fn test_is_actionable_covers_click_targets_not_captions() {
+        assert!(is_actionable("AXButton"));
+        assert!(is_actionable("AXMenuItem"));
+        assert!(is_actionable("AXTextField"));
+        assert!(is_actionable("AXCheckBox"));
+        // Prefix-tolerant and case-insensitive, like every other role compare.
+        assert!(is_actionable("button"));
+        // The roles that made the bug: labels, containers, decoration.
+        assert!(!is_actionable("AXStaticText"));
+        assert!(!is_actionable("AXGroup"));
+        assert!(!is_actionable("AXImage"));
+    }
+
+    fn pick_one(matches: &[AXElement]) -> &AXElement {
+        match pick_click_target(matches) {
+            ClickTarget::One(el) => el,
+            other => panic!("expected one target, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_pick_click_target_prefers_button_over_caption() {
+        // The reported case: `--label Save` in a save panel matches the
+        // "Save As:" caption first (it sits earlier in the tree) and the Save
+        // button second. Tree order must not decide this.
+        let mut caption = make_element("AXStaticText", Some("Save As:"));
+        caption.identifier = Some("nameFieldLabel".to_string());
+        let button = make_element("AXButton", Some("Save"));
+
+        let matches = [caption, button];
+        let picked = pick_one(&matches);
+        assert_eq!(picked.role, "AXButton");
+        assert_eq!(picked.title.as_deref(), Some("Save"));
+    }
+
+    #[test]
+    fn test_pick_click_target_ambiguous_actionable_refuses() {
+        // Two real buttons: no safe guess, so the caller gets the candidates
+        // rather than a silent coin flip.
+        let matches = vec![
+            make_element("AXButton", Some("Save")),
+            make_element("AXStaticText", Some("Save As:")),
+            make_element("AXButton", Some("Save All")),
+        ];
+        match pick_click_target(&matches) {
+            ClickTarget::Ambiguous(candidates) => {
+                // Only the actionable ones are offered as candidates.
+                assert_eq!(candidates.len(), 2);
+                assert!(candidates.iter().all(|c| c.role == "AXButton"));
+            }
+            other => panic!("expected ambiguity, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_pick_click_target_all_static_keeps_first_match() {
+        // Webview content (Tauri/wry, Safari) is nested AXStaticText with no
+        // actionable role anywhere — refusing here would break the flow
+        // `--label` exists for. First match still wins.
+        let mut outer = make_element("AXGroup", None);
+        outer.value = Some("Settings".to_string());
+        let mut inner = make_element("AXStaticText", None);
+        inner.value = Some("Settings".to_string());
+
+        let matches = [outer, inner];
+        let picked = pick_one(&matches);
+        assert_eq!(picked.role, "AXGroup");
+    }
+
+    #[test]
+    fn test_pick_click_target_single_match_unchanged() {
+        let matches = [make_element("AXStaticText", Some("only"))];
+        let picked = pick_one(&matches);
+        assert_eq!(picked.title.as_deref(), Some("only"));
+    }
+
+    #[test]
+    fn test_pick_click_target_empty_is_none() {
+        assert!(matches!(pick_click_target(&[]), ClickTarget::None));
+    }
+
+    #[test]
+    fn test_pick_click_target_index_query_stays_deterministic() {
+        // `--index` narrows inside search_tree to exactly one element, so the
+        // picker must pass it through even when it is a caption — the caller
+        // already chose from `find`'s tree-ordered list.
+        let tree = make_tree();
+        let q = ElementQuery {
+            role: Some("statictext".to_string()),
+            index: Some(0),
+            ..Default::default()
+        };
+        let results = search_tree(&tree, &q);
+        assert_eq!(results.len(), 1);
+        assert_eq!(pick_one(&results).role, "AXStaticText");
     }
 
     // ── search_tree tests ──

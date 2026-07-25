@@ -12,4 +12,4 @@ pub use element::{
 };
 pub use error::{LokiError, LokiResult};
 pub use output::OutputFormat;
-pub use query::{ElementQuery, WindowFilter};
+pub use query::{ClickTarget, ElementQuery, WindowFilter};

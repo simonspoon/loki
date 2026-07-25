@@ -6,6 +6,11 @@ pub enum LokiError {
     #[error("element not found: {0}")]
     ElementNotFound(String),
 
+    /// Several equally-clickable elements matched one query. Refusing beats
+    /// clicking the first hit silently — that failure looks like success.
+    #[error("ambiguous match: {0}")]
+    AmbiguousMatch(String),
+
     #[error("window not found: {0}")]
     WindowNotFound(String),
 
@@ -77,6 +82,7 @@ mod tests {
     #[test]
     fn test_exit_code_defaults_to_1() {
         assert_eq!(LokiError::ElementNotFound("x".into()).exit_code(), 1);
+        assert_eq!(LokiError::AmbiguousMatch("x".into()).exit_code(), 1);
         assert_eq!(LokiError::WindowNotFound("x".into()).exit_code(), 1);
         assert_eq!(LokiError::AppNotFound("x".into()).exit_code(), 1);
         assert_eq!(LokiError::LaunchFailed("x".into()).exit_code(), 1);
