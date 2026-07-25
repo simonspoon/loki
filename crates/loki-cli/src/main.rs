@@ -193,6 +193,47 @@ enum Command {
         window: Option<u32>,
     },
 
+    /// Scroll at screen coordinates with a real wheel event, e.g. `wheel 640 400 0,300`
+    ///
+    /// Posts a real OS-level scroll wheel event carrying its own location, so it
+    /// hits whatever pane sits under (X, Y). `key pagedown` is not a substitute
+    /// for a webview `overflow-y: auto` pane with no `tabindex`: the pane can
+    /// never take focus, so the key scrolls the document behind it and the
+    /// screenshot comes back identical, reading as an app bug.
+    /// Pass --pid or --window: a raw wheel event does NOT activate the target
+    /// app, and an inactive app swallows the scroll without erroring.
+    #[command(allow_negative_numbers = true)]
+    Wheel {
+        /// X in absolute screen coordinates
+        x: f64,
+        /// Y in absolute screen coordinates
+        y: f64,
+        /// Scroll delta as dX,dY in pixels, e.g. `0,300` scrolls down 300px.
+        /// Positive dY scrolls down and positive dX scrolls right, matching
+        /// khora's `wheel` and the DOM's WheelEvent — not Core Graphics' axes,
+        /// which run the other way
+        ///
+        /// `allow_hyphen_values`, not the command's `allow_negative_numbers`:
+        /// the latter admits a leading '-' only on a token that parses as a
+        /// number, and `-800,0` does not — clap read it as the flag `-8` and
+        /// scroll-left was unreachable from the CLI.
+        #[arg(allow_hyphen_values = true)]
+        delta: String,
+        /// Number of wheel events the delta is split across. Raise for apps with
+        /// momentum/smooth scrolling that clamp a single large jump
+        #[arg(long, default_value_t = loki_macos::input::DEFAULT_WHEEL_STEPS)]
+        steps: usize,
+        /// Pause between wheel events in milliseconds (lets the app re-render)
+        #[arg(long, default_value_t = loki_macos::input::DEFAULT_WHEEL_DELAY_MS)]
+        delay: u64,
+        /// Target process ID (activates app before scrolling)
+        #[arg(long)]
+        pid: Option<u32>,
+        /// Target window ID (activates app before scrolling)
+        #[arg(long)]
+        window: Option<u32>,
+    },
+
     /// Type a string of text (use --pid or --window to target a specific app)
     Type {
         text: String,
@@ -604,6 +645,35 @@ async fn run(cli: &Cli, driver: &MacOSDriver) -> Result<String, loki_core::LokiE
             }
         }
 
+        Command::Wheel {
+            x,
+            y,
+            delta,
+            steps,
+            delay,
+            pid,
+            window,
+        } => {
+            let (dx, dy) = parse_wheel_delta(delta)?;
+            let target_pid = resolve_target_pid(driver, *pid, *window).await?;
+            driver
+                .wheel((*x, *y), (dx, dy), *steps, *delay, target_pid)
+                .await?;
+            match cli.format {
+                OutputFormat::Text => {
+                    Ok(format!("Scrolled ({dx}, {dy}) at ({x}, {y})"))
+                }
+                OutputFormat::Json => Ok(serde_json::to_string_pretty(&serde_json::json!({
+                    "action": "wheel",
+                    "at": { "x": x, "y": y },
+                    "delta": { "dx": dx, "dy": dy },
+                    "steps": steps,
+                    "delay": delay,
+                }))
+                .unwrap()),
+            }
+        }
+
         Command::Type { text, pid, window } => {
             let target_pid = resolve_target_pid(driver, *pid, *window).await?;
             driver.type_text(text, target_pid).await?;
@@ -856,6 +926,25 @@ fn split_menu_path(path: &str, separator: &str) -> Result<Vec<String>, loki_core
     Ok(segments)
 }
 
+/// Parse a `dX,dY` scroll delta in pixels.
+///
+/// The pair is required rather than inferred from a bare number: `wheel 640 400
+/// 300` has no honest reading — horizontal and vertical are equally plausible —
+/// and guessing vertical would scroll the wrong axis silently. Same shape as
+/// `khora wheel <AT> <DELTA>`.
+fn parse_wheel_delta(delta: &str) -> Result<(i32, i32), loki_core::LokiError> {
+    let bad = || {
+        loki_core::LokiError::InputError(format!(
+            "invalid scroll delta '{delta}' — expected dX,dY in pixels, e.g. '0,300' to scroll down"
+        ))
+    };
+    let (dx, dy) = delta.split_once(',').ok_or_else(bad)?;
+    Ok((
+        dx.trim().parse::<i32>().map_err(|_| bad())?,
+        dy.trim().parse::<i32>().map_err(|_| bad())?,
+    ))
+}
+
 /// Resolve a target PID from --pid or --window flags.
 /// Returns Some(pid) if either is specified, None otherwise (uses focused app).
 async fn resolve_target_pid(
@@ -898,6 +987,30 @@ async fn find_window_ref(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_parse_wheel_delta_pair() {
+        assert_eq!(parse_wheel_delta("0,300").unwrap(), (0, 300));
+    }
+
+    #[test]
+    fn test_parse_wheel_delta_negative_and_spaced() {
+        assert_eq!(parse_wheel_delta("-40, -300").unwrap(), (-40, -300));
+    }
+
+    #[test]
+    fn test_parse_wheel_delta_rejects_bare_number() {
+        // Ambiguous between axes — must not silently be read as vertical.
+        let err = parse_wheel_delta("300").unwrap_err().to_string();
+        assert!(err.contains("dX,dY"), "unhelpful error: {err}");
+    }
+
+    #[test]
+    fn test_parse_wheel_delta_rejects_non_numeric() {
+        assert!(parse_wheel_delta("0,down").is_err());
+        assert!(parse_wheel_delta("0,300,0").is_err());
+        assert!(parse_wheel_delta("").is_err());
+    }
 
     #[test]
     fn test_split_menu_path_levels() {

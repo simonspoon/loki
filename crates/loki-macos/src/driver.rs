@@ -188,6 +188,22 @@ impl DesktopDriver for MacOSDriver {
         input::drag_from_to(from.0, from.1, to.0, to.1, steps, delay_ms)
     }
 
+    async fn wheel(
+        &self,
+        at: (f64, f64),
+        delta: (i32, i32),
+        steps: usize,
+        delay_ms: u64,
+        pid: Option<i32>,
+    ) -> LokiResult<()> {
+        // Same activation rule as drag: a raw wheel event carries no activation,
+        // and an inactive app drops it silently.
+        if let Some(p) = pid {
+            app::activate_app(p as u32)?;
+        }
+        input::scroll_at(at.0, at.1, delta.0, delta.1, steps, delay_ms)
+    }
+
     async fn click_element(
         &self,
         window: &WindowRef,

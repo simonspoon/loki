@@ -166,6 +166,39 @@ The `--label` flag (also supported by `find`, `wait-for`, `wait-gone`) matches
 against title, value, description, and identifier. See [Find elements](#find-elements)
 for matching rules.
 
+### Scroll (wheel)
+
+```bash
+loki wheel 640 400 0,300                  # Scroll down 300px at those screen coords
+loki wheel 640 400 0,-300                 # Negative dY scrolls up
+loki wheel 640 400 800,0                  # Positive dX scrolls right
+loki wheel 640 400 0,500 --window <WINDOW_ID>       # Activate the app first
+loki wheel 640 400 0,500 --steps 8 --delay 25       # Split across 8 wheel events
+```
+
+`X` and `Y` are absolute screen coordinates, as with `click` and `drag`;
+`--window`/`--pid` only activate the target app, they do not change the
+coordinate space.
+
+The delta is a `dX,dY` pair in pixels — the same shape as `khora wheel`, and the
+same sign convention as the DOM's `WheelEvent`: **positive `dY` scrolls down,
+positive `dX` scrolls right**. (Core Graphics' own wheel axes run the other way;
+loki flips them for you.) The pair is required: a bare `300` has no honest
+reading, since horizontal and vertical are equally plausible.
+
+Use this rather than `key pagedown` whenever the thing you need to scroll is a
+webview container with `overflow-y: auto` and no `tabindex`. Such a pane can
+never take focus, so the key is delivered to the document behind it, the pane
+does not move, and the screenshot comes back identical — which reads as an app
+bug rather than a driving mistake. A wheel event carries its own location, so it
+reaches whatever pane sits under `X,Y` regardless of focus.
+
+Raise `--steps` for apps whose momentum or smooth scrolling clamps a single
+large jump; the delta is split into whole-pixel increments that still sum to
+exactly what you asked for. As with `drag`, a raw wheel event does not activate
+the target app, and an inactive app can swallow the scroll without erroring —
+so pass `--window` or `--pid`.
+
 ### Type text
 
 ```bash

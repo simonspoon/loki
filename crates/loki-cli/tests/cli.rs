@@ -107,6 +107,71 @@ fn test_drag_rejects_non_numeric_coordinates() {
 }
 
 #[test]
+fn test_wheel_help_documents_activation_and_sign() {
+    loki()
+        .args(["wheel", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--steps"))
+        // Same silent-no-op trap as drag: a raw wheel event carries no activation.
+        .stdout(predicate::str::contains("does NOT activate"))
+        // Sign convention is the thing a caller gets wrong first.
+        .stdout(predicate::str::contains("scrolls down"));
+}
+
+#[test]
+fn test_wheel_requires_delta() {
+    loki().args(["wheel", "640", "400"]).assert().failure();
+}
+
+// `-800,0` is scroll-left. The command's `allow_negative_numbers` does NOT cover
+// it — that only admits a leading '-' on a token parsing as a number — so clap
+// read it as the flag `-8` and scroll-left was unreachable. Guards the fix
+// (`allow_hyphen_values` on `delta`); a unit test of the parser alone never sees
+// this, because clap rejects the token before the parser is ever called.
+#[test]
+fn test_wheel_accepts_negative_dx() {
+    loki()
+        .args(["wheel", "640", "400", "-800,0", "--help"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn test_wheel_accepts_both_deltas_negative() {
+    loki()
+        .args(["wheel", "640", "400", "-800,-300", "--help"])
+        .assert()
+        .success();
+}
+
+// allow_hyphen_values on the delta must not start swallowing the flags after it.
+#[test]
+fn test_wheel_flags_after_negative_delta_still_parse() {
+    loki()
+        .args(["wheel", "640", "400", "-800,0", "--steps", "4", "--help"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn test_wheel_rejects_bare_number_delta() {
+    loki()
+        .args(["wheel", "640", "400", "300"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("dX,dY"));
+}
+
+#[test]
+fn test_wheel_rejects_non_numeric_delta() {
+    loki()
+        .args(["wheel", "640", "400", "0,down"])
+        .assert()
+        .failure();
+}
+
+#[test]
 fn test_wait_for_help_shows_label() {
     loki()
         .args(["wait-for", "--help"])

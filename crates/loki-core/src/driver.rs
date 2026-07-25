@@ -69,6 +69,27 @@ pub trait DesktopDriver: Send + Sync {
         pid: Option<i32>,
     ) -> LokiResult<()>;
 
+    /// Scroll at absolute screen coordinates with real OS-level wheel events,
+    /// delivered as `steps` increments `delay_ms` apart.
+    ///
+    /// `delta` is `(dx, dy)` in pixels, DOM/khora convention: positive `dy`
+    /// scrolls down, positive `dx` scrolls right.
+    ///
+    /// The wheel event carries its own location, so this reaches a pane that
+    /// cannot take focus — the case `key_press("pagedown")` cannot serve, since
+    /// a key goes to the focused element and scrolls the document instead.
+    ///
+    /// If `pid` is Some, activate that app first: a raw wheel event does not
+    /// activate the target, and an inactive app swallows it with no error.
+    async fn wheel(
+        &self,
+        at: (f64, f64),
+        delta: (i32, i32),
+        steps: usize,
+        delay_ms: u64,
+        pid: Option<i32>,
+    ) -> LokiResult<()>;
+
     /// Click the center of a UI element.
     async fn click_element(
         &self,

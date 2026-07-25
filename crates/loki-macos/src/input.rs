@@ -4,7 +4,9 @@
 //! Keyboard input uses System Events via osascript (reliable regardless of which
 //! process has focus).
 
-use core_graphics::event::{CGEvent, CGEventTapLocation, CGEventType, CGMouseButton, EventField};
+use core_graphics::event::{
+    CGEvent, CGEventTapLocation, CGEventType, CGMouseButton, EventField, ScrollEventUnit,
+};
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 use core_graphics::geometry::CGPoint;
 use loki_core::{LokiError, LokiResult};
@@ -186,6 +188,91 @@ pub fn drag_from_to(
     post(CGEventType::LeftMouseUp, CGPoint::new(x2, y2))
 }
 
+/// Default number of wheel events a scroll delta is split across.
+pub const DEFAULT_WHEEL_STEPS: usize = 1;
+
+/// Default pause between wheel events, in milliseconds.
+pub const DEFAULT_WHEEL_DELAY_MS: u64 = 16;
+
+/// Split a scroll delta into `steps` whole-pixel increments that sum to exactly
+/// the delta. Integer division leaves a remainder, so the earliest increments
+/// each absorb one extra pixel — otherwise a `--steps 7` scroll of 300 px would
+/// silently deliver only 294.
+fn scroll_increments(delta: i32, steps: usize) -> Vec<i32> {
+    let steps = steps.max(1);
+    let sign = if delta < 0 { -1 } else { 1 };
+    let magnitude = delta.unsigned_abs();
+    let base = magnitude / steps as u32;
+    let remainder = magnitude % steps as u32;
+    (0..steps)
+        .map(|i| {
+            let extra = u32::from((i as u32) < remainder);
+            sign * (base + extra) as i32
+        })
+        .collect()
+}
+
+/// Scroll at absolute screen coordinates with real OS-level wheel events.
+///
+/// `dx`/`dy` are in pixels and use the **DOM/khora convention: positive `dy`
+/// scrolls down, positive `dx` scrolls right**. Core Graphics' own wheel axes
+/// run the other way, so both are negated on the way out — keep the flip here,
+/// not at the CLI, or the driver API grows a second convention.
+///
+/// The event carries its own location, which is what a webview routes on, so
+/// this hits the pane under (`x`, `y`) whether or not it can take focus — the
+/// reason `key pagedown` is not a substitute for an `overflow-y: auto` pane
+/// with no `tabindex`. A `MouseMoved` is posted first because hit strips and
+/// hover-armed scrollers latch on mouse-enter.
+///
+/// Does NOT activate the target app; the caller must do that first (see
+/// `DesktopDriver::wheel`).
+pub fn scroll_at(
+    x: f64,
+    y: f64,
+    dx: i32,
+    dy: i32,
+    steps: usize,
+    delay_ms: u64,
+) -> LokiResult<()> {
+    let source = event_source()?;
+    let point = CGPoint::new(x, y);
+    let delay = Duration::from_millis(delay_ms);
+
+    let move_event =
+        CGEvent::new_mouse_event(source.clone(), CGEventType::MouseMoved, point, CGMouseButton::Left)
+            .map_err(|()| LokiError::InputError("failed to create mouse move event".into()))?;
+    move_event.post(CGEventTapLocation::HID);
+    thread::sleep(delay);
+
+    // Two axes only when there is horizontal travel: a 1-axis event is what a
+    // plain wheel posts, and some scrollers treat an explicit 0 second axis as a
+    // horizontal gesture.
+    let axes = if dx == 0 { 1 } else { 2 };
+
+    for (step_dx, step_dy) in scroll_increments(dx, steps)
+        .into_iter()
+        .zip(scroll_increments(dy, steps))
+    {
+        let event = CGEvent::new_scroll_event(
+            source.clone(),
+            ScrollEventUnit::PIXEL,
+            axes,
+            -step_dy,
+            -step_dx,
+            0,
+        )
+        .map_err(|()| LokiError::InputError("failed to create scroll wheel event".into()))?;
+        // The constructor takes no point; without this the event lands wherever
+        // the pointer happens to be and scrolls the wrong pane.
+        event.set_location(point);
+        event.post(CGEventTapLocation::HID);
+        thread::sleep(delay);
+    }
+
+    Ok(())
+}
+
 // ── Keyboard ──
 
 /// Type a string using System Events keystroke via osascript.
@@ -337,6 +424,38 @@ fn applescript_key_code(name: &str) -> Option<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_scroll_increments_sum_to_delta() {
+        // 300 over 7 steps does not divide evenly; the pane must still travel
+        // exactly 300 px, not 294.
+        let increments = scroll_increments(300, 7);
+        assert_eq!(increments.len(), 7);
+        assert_eq!(increments.iter().sum::<i32>(), 300);
+    }
+
+    #[test]
+    fn test_scroll_increments_single_step_is_whole_delta() {
+        assert_eq!(scroll_increments(-300, 1), vec![-300]);
+    }
+
+    #[test]
+    fn test_scroll_increments_preserve_sign() {
+        let increments = scroll_increments(-10, 4);
+        assert_eq!(increments.iter().sum::<i32>(), -10);
+        assert!(increments.iter().all(|&d| d <= 0));
+    }
+
+    #[test]
+    fn test_scroll_increments_zero_steps_still_delivers_delta() {
+        // steps=0 would otherwise post nothing at all — a silent no-op scroll.
+        assert_eq!(scroll_increments(120, 0), vec![120]);
+    }
+
+    #[test]
+    fn test_scroll_increments_zero_delta_is_all_zero() {
+        assert_eq!(scroll_increments(0, 3), vec![0, 0, 0]);
+    }
 
     #[test]
     fn test_drag_path_reaches_destination() {

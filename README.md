@@ -41,6 +41,15 @@ loki click-element <WINDOW_ID> --title "Equals"
 loki drag 404 300 244 300 --window <WINDOW_ID>
 loki drag 404 300 244 300 --window <WINDOW_ID> --steps 20 --delay 25
 
+# Scroll a pane the keyboard can't reach — a webview `overflow-y: auto`
+# container has no tabindex, so it never takes focus and `key pagedown`
+# scrolls the document behind it instead, leaving the screenshot unchanged.
+# The wheel event carries its own location, so it hits the pane under X,Y.
+loki wheel 640 400 0,300 --window <WINDOW_ID>      # positive dY scrolls down
+loki wheel 640 400 0,-300 --window <WINDOW_ID>     # negative dY scrolls up
+loki wheel 640 400 800,0 --window <WINDOW_ID>      # positive dX scrolls right
+loki wheel 640 400 0,500 --window <WINDOW_ID> --steps 8   # for momentum scrollers
+
 # Type text and send key combos
 loki type "Hello" --window <WINDOW_ID>
 loki key cmd+a --window <WINDOW_ID>
@@ -77,6 +86,7 @@ loki kill com.apple.Calculator
 | `click` | Click at screen coordinates (use --pid to target an app) |
 | `click-element` | Click a UI element by query |
 | `drag` | Drag between two screen points with real OS mouse events (dividers, resizers, sliders) |
+| `wheel` | Scroll at screen coordinates with a real wheel event — reaches panes that can't take focus |
 | `type` | Type text (use --window to target an app) |
 | `key` | Send key combo, e.g. `cmd+s`, `ctrl+shift+a` |
 | `menu` | Open and press an app menu-bar item by path, e.g. `"File>Open File…"` |
