@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-25
+
 ### Added
 
 - **`windows --require-match` exits 1 when no window matched, and an empty listing now explains itself.** `windows` is the first line of nearly every loki script — `WID=$(loki -f json windows --title MyApp | jq -r '.[0].window_id')` — so a mistyped or wrong title didn't fail there: it returned `[]` at exit 0, `$WID` became the string `"null"`, and the *next* command died with `invalid value 'null' for '<WINDOW_ID>': invalid digit found in string`. One wrong title read as a broken loki, the same cascade a wrong targeting flag used to produce. `wait-window` already exited 3 on a miss, leaving `windows` the odd one out. As with `find`, the default exit code stays **0** so a script polling for absence (`windows … | jq length` = 0) survives `set -e`, and `-f json` still returns `[]` on that path — what changed unconditionally is the text output, which names what was searched and which *relaxation* of the query would have hit. It separates causes that used to print the same three words: an anchoring near-miss (`near-miss (contains "Center" but the glob above did not match): "Control Center"`), a mistyped `--bundle-id` (near-miss bundle IDs present) versus one whose app simply hasn't opened a window yet (pointing at `wait-window`), a stale `--pid`, two flags that each match but describe different windows, and — the cause no caller can see — **windows dropped for having an empty title before any flag was applied**, which now says `8 window(s) match the rest of the query but have an empty title — `--all` would have included them`.
