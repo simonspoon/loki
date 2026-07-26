@@ -74,10 +74,67 @@ loki windows --all                        # Include untitled windows
 loki windows --title "Calculator"         # By title (substring)
 loki windows --bundle-id com.apple.Safari # By bundle ID
 loki windows --pid 12345                  # By process ID
+loki windows --title "Calculator" --require-match  # Exit 1 if nothing matched
 ```
 
 By default, windows with empty titles (system-level helper windows) are hidden.
 Use `--all` to include them.
+
+### When nothing matches
+
+`windows` exits **0** on an empty listing by default, so a script polling for
+absence (`windows … | jq length` = 0) keeps working under `set -e`. But an empty
+listing here does not surface here — it surfaces one command later. The standard
+opening line
+
+```bash
+WID=$(loki -f json windows --title MyApp | jq -r '.[0].window_id')
+```
+
+sets `$WID` to the string `"null"` when nothing matched, and the *next* command
+fails with `invalid value 'null' for '<WINDOW_ID>': invalid digit found in
+string` — so a mistyped title reads as a broken loki. Two ways out, and you
+usually want both:
+
+**Pass `--require-match`** when a miss is a failure. The command exits 1 with
+the diagnostic on stderr, so the script stops at the line that is actually
+wrong. Capture *before* piping into `jq` — in `loki … | jq` the assignment takes
+**jq's** exit code, which is 0, so the pipeline swallows the failure and leaves
+`$WID` empty instead:
+
+```bash
+LIST=$(loki -f json windows --title MyApp --require-match) || exit 1
+WID=$(jq -r '.[0].window_id' <<<"$LIST")
+```
+
+**Read the diagnostic**, which is printed unconditionally in text mode. It names
+what was searched and which relaxation of the query would have hit:
+
+```console
+$ loki windows --title "Center*"
+No windows found: no window matched title glob "Center*"
+  searched: 191 windows (70 titled, 121 untitled, excluded without --all)
+  near-miss (contains "Center" but the glob above did not match): "Control Center", "Notification Center"
+```
+
+The causes it separates:
+
+| Line | Cause |
+|---|---|
+| `N window(s) match the rest of the query but have an empty title — `--all` would have included them` | Untitled windows are dropped *before* any flag is applied, so nothing in your query explains the empty result |
+| `near-miss (contains "X" but the glob above did not match)` | The title is there; your glob's leading/trailing anchor excluded it |
+| `no window title contains "X"` | Not a case problem (matching is case-insensitive) — the window may not be open yet, so use `wait-window --title` |
+| `no window belongs to "com.x.y" — near-miss bundle-ids present` | Mistyped `--bundle-id` |
+| `no window belongs to "com.x.y"; if the app is running it has not opened a window yet` | Right bundle ID, no window yet — use `wait-window --bundle-id` |
+| `no window belongs to pid N — the process may have exited` | Stale `--pid` |
+| `no window satisfies all of them together, though each is satisfiable alone` | Two flags describing different windows |
+
+`-f json` is unaffected on the default path: an empty result is still `[]`, so
+existing `jq` callers see no change. Under `--require-match` the diagnostic is an
+error on stderr in both formats.
+
+Use `wait-window` instead when the window may still be arriving — it polls and
+exits **3** on timeout, with the same style of diagnostic.
 
 ### Window title matching
 
@@ -574,7 +631,12 @@ Example JSON output from `windows`:
 ```bash
 loki launch com.apple.TextEdit
 loki wait-window --bundle-id com.apple.TextEdit
-WINDOW=$(loki windows --bundle-id com.apple.TextEdit -f json | jq -r '.[0].window_id')
+# --require-match so a miss fails *here*, not on the next command with a
+# confusing `invalid digit found in string` from $WINDOW being "null".
+# Capture before piping: `loki … --require-match | jq` returns *jq's* exit code,
+# which is 0, so the failure would be swallowed by the pipeline.
+LIST=$(loki windows --bundle-id com.apple.TextEdit -f json --require-match) || exit 1
+WINDOW=$(jq -r '.[0].window_id' <<<"$LIST")
 loki type "Hello" --window "$WINDOW"
 loki key cmd+s --window "$WINDOW"
 loki screenshot --window "$WINDOW" --output after-save.png

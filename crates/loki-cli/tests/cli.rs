@@ -791,3 +791,162 @@ fn test_find_require_match_exit_codes() {
             .stdout(predicate::str::contains("[]"));
     }
 }
+
+// ── windows --require-match (mesa 565) ──
+// These need no accessibility permission: `windows` reads the Core Graphics
+// list, which is why — unlike the `find` test above — they are not #[ignore]d.
+// They drive the CLI rather than the helper, because clap can reject a flag
+// before any tested code runs (the `-800,0` lesson from mesa 536).
+
+#[test]
+fn test_windows_require_match_exit_codes() {
+    // mesa 565: a mistyped --title was byte-identical to the window genuinely
+    // not being open, so `$WID` became "null" and the *next* command failed on
+    // an unrelated parse error. Both halves matter — the flag must exit 1, and
+    // the default must keep exiting 0 so `windows … | jq length` absence polls
+    // survive `set -e`.
+    let miss = "zzz-no-such-window-xyz-565";
+
+    loki()
+        .args(["windows", "--title", miss])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No windows found"))
+        .stdout(predicate::str::contains("searched:"));
+
+    loki()
+        .args(["windows", "--title", miss, "--require-match"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("window not found"))
+        .stderr(predicate::str::contains("searched:"));
+
+    // `-f json` stays machine-readable on the default path — an empty result is
+    // still `[]`, so existing `jq` callers see no change at all.
+    loki()
+        .args(["--format", "json", "windows", "--title", miss])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("[]"));
+
+    // …and the flag still fails in json mode, on stderr.
+    loki()
+        .args([
+            "--format",
+            "json",
+            "windows",
+            "--title",
+            miss,
+            "--require-match",
+        ])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("window not found"));
+}
+
+#[test]
+fn test_windows_require_match_is_silent_on_a_hit() {
+    // The flag must be inert when the query matches: same exit code, and no
+    // diagnostic leaking into stdout that a `jq` caller would then parse.
+    let listing = loki()
+        .args(["--format", "json", "windows"])
+        .output()
+        .unwrap();
+    let windows: serde_json::Value = serde_json::from_slice(&listing.stdout).unwrap();
+    let Some(title) = windows
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find_map(|w| w["title"].as_str().filter(|t| !t.is_empty()))
+    else {
+        return; // headless runner with no titled window — nothing to assert
+    };
+
+    loki()
+        .args(["windows", "--title", title, "--require-match"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No windows found").not());
+}
+
+#[test]
+fn test_windows_empty_result_names_the_all_flag() {
+    // The cause no caller can see: the default listing drops untitled windows
+    // *before* any flag is applied, so a --bundle-id that matches perfectly
+    // still comes back empty and nothing in the query explains it.
+    let listing = loki()
+        .args(["--format", "json", "windows", "--all"])
+        .output()
+        .unwrap();
+    let windows: serde_json::Value = serde_json::from_slice(&listing.stdout).unwrap();
+    let all: Vec<&serde_json::Value> = windows.as_array().into_iter().flatten().collect();
+
+    // An app whose windows are *all* untitled — then `--bundle-id <it>` is
+    // empty by default and non-empty under --all.
+    let Some(bundle_id) = all
+        .iter()
+        .filter_map(|w| w["bundle_id"].as_str())
+        .find(|b| {
+            all.iter()
+                .filter(|w| w["bundle_id"].as_str() == Some(b))
+                .all(|w| w["title"].as_str().is_none_or(str::is_empty))
+        })
+        .map(str::to_string)
+    else {
+        return; // no such app running — nothing to assert
+    };
+
+    loki()
+        .args(["windows", "--bundle-id", &bundle_id])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("`--all` would have included them"));
+
+    loki()
+        .args(["windows", "--bundle-id", &bundle_id, "--all"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No windows found").not());
+}
+
+#[test]
+fn test_windows_empty_result_distinguishes_its_causes() {
+    // The point of the ticket: the four causes used to print the same three
+    // words. Each line below is a *different* diagnosis for a different miss.
+    loki()
+        .args(["windows", "--pid", "999999"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("no window belongs to pid 999999"));
+
+    loki()
+        .args(["windows", "--bundle-id", "com.zzz.nothing.565"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("wait-window --bundle-id"));
+
+    // A title present in the list but excluded by the glob's anchor is a
+    // near-miss, not an absence — and must not be reported when the glob did
+    // match and some other flag was the one excluding.
+    let listing = loki()
+        .args(["--format", "json", "windows"])
+        .output()
+        .unwrap();
+    let windows: serde_json::Value = serde_json::from_slice(&listing.stdout).unwrap();
+    let anchored = windows
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find_map(|w| w["title"].as_str().filter(|t| t.chars().count() > 3))
+        // Drop the first *char* (titles carry unicode bidi marks, so a byte
+        // slice can land mid-codepoint and panic) and anchor the start, so the
+        // glob cannot match a title that plainly contains the needle.
+        .map(|t| format!("{}*", t.chars().skip(1).collect::<String>()));
+    if let Some(pattern) = anchored {
+        loki()
+            .args(["windows", "--title", &pattern])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("near-miss"));
+    }
+}

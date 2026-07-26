@@ -55,6 +55,15 @@ enum Command {
         /// Include windows with empty titles
         #[arg(long)]
         all: bool,
+        /// Exit 1 when no window matches, instead of exiting 0 with an empty
+        /// list. Without it a mistyped --title is byte-identical to the window
+        /// genuinely not being open, and the usual
+        /// `WID=$(loki -f json windows --title X | jq -r '.[0].window_id')`
+        /// resolves the string "null", so the *next* command fails on an
+        /// unrelated parse error. Off by default: a script that legitimately
+        /// polls for absence (`windows … | jq length` == 0) must keep exiting 0.
+        #[arg(long)]
+        require_match: bool,
     },
 
     /// Check if accessibility permission is granted
@@ -495,6 +504,7 @@ async fn run(cli: &Cli, driver: &MacOSDriver) -> Result<String, loki_core::LokiE
             pid,
             title,
             all,
+            require_match,
         } => {
             let filter = WindowFilter {
                 title: title.clone(),
@@ -503,6 +513,21 @@ async fn run(cli: &Cli, driver: &MacOSDriver) -> Result<String, loki_core::LokiE
                 include_unnamed: *all,
             };
             let windows = driver.list_windows(&filter).await?;
+
+            if windows.is_empty() {
+                let detail = explain_empty_windows(driver, &filter).await;
+                if *require_match {
+                    return Err(loki_core::LokiError::WindowNotFound(detail));
+                }
+                // Default path keeps exit 0 and the machine-readable shape:
+                // `-f json` must stay `[]` for `jq length` absence polls.
+                // Text output carries the same diagnostic the error would, so
+                // the caller who never passes --require-match — the one this
+                // ticket exists for — still sees *why* it was empty.
+                if matches!(cli.format, OutputFormat::Text) {
+                    return Ok(format!("No windows found: {detail}"));
+                }
+            }
             Ok(loki_core::output::format_windows(&windows, cli.format))
         }
 
@@ -1149,6 +1174,258 @@ async fn explain_empty_find(
                         .to_string(),
                 );
             }
+        }
+    }
+
+    lines.join("\n")
+}
+
+/// Turn an empty `windows` listing into something diagnosable.
+///
+/// `windows` is the first line of nearly every loki script — `WID=$(loki -f
+/// json windows --title X | jq -r '.[0].window_id')` — so a miss here does not
+/// surface here. `$WID` becomes the string `"null"` and the *next* command dies
+/// on an unrelated parse error, which reads as a broken loki rather than a
+/// mistyped title (mesa 565). Same shape as `explain_empty_find` (mesa 550) and
+/// `explain_wait_window_timeout`: report what was actually searched, and which
+/// *relaxation* of the query would have hit.
+///
+/// The causes it has to separate: a title the glob anchored past, a wrong
+/// `--bundle-id`/`--pid`, a window that has not opened yet — and the one no
+/// caller can see, an untitled window dropped before any flag was applied
+/// because `--all` was not passed.
+async fn explain_empty_windows(driver: &MacOSDriver, filter: &WindowFilter) -> String {
+    // The list as it stands, unfiltered and including untitled windows — the
+    // denominator every line below is measured against.
+    let all = driver
+        .list_windows(&WindowFilter {
+            include_unnamed: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap_or_default();
+    let titled = all.iter().filter(|w| !w.title.is_empty()).count();
+
+    let mut wanted = Vec::new();
+    if let Some(pattern) = filter.effective_title_pattern() {
+        wanted.push(format!("title glob {pattern:?}"));
+    }
+    if let Some(ref bundle_id) = filter.bundle_id {
+        wanted.push(format!("bundle-id {bundle_id:?}"));
+    }
+    if let Some(pid) = filter.pid {
+        wanted.push(format!("pid {pid}"));
+    }
+    let wanted = if wanted.is_empty() {
+        "any window".to_string()
+    } else {
+        wanted.join(" + ")
+    };
+
+    let mut lines = vec![
+        format!("no window matched {wanted}"),
+        format!(
+            "  searched: {} windows ({titled} titled, {} untitled{})",
+            all.len(),
+            all.len() - titled,
+            if filter.include_unnamed {
+                ""
+            } else {
+                ", excluded without --all"
+            }
+        ),
+    ];
+
+    if all.is_empty() {
+        // Nothing in the CG list at all — not a query problem.
+        lines.push(
+            "  the window list itself is empty — no app has an on-screen window, or screen \
+             access is not granted (`loki check-permission`)"
+                .to_string(),
+        );
+        return lines.join("\n");
+    }
+
+    // Relaxation 1: `--all`. Checked first because it is the only constraint
+    // the caller never typed — the default listing drops untitled windows
+    // before any flag is applied, so a filter that matches perfectly still
+    // comes back empty and nothing in the query explains it.
+    if !filter.include_unnamed {
+        let relaxed = WindowFilter {
+            include_unnamed: true,
+            ..filter.clone()
+        };
+        let n = all.iter().filter(|w| relaxed.matches(w)).count();
+        if n > 0 {
+            lines.push(format!(
+                "  {n} window(s) match the rest of the query but have an empty title — `--all` \
+                 would have included them"
+            ));
+            return lines.join("\n");
+        }
+    }
+
+    // Relaxation 2: drop one typed flag at a time and report which single one
+    // is doing the excluding. This is what separates "wrong bundle-id" from
+    // "right app, wrong title" when both were passed.
+    let mut relaxations: Vec<(&str, WindowFilter)> = Vec::new();
+    if filter.title.is_some() {
+        relaxations.push((
+            "--title",
+            WindowFilter {
+                title: None,
+                ..filter.clone()
+            },
+        ));
+    }
+    if filter.bundle_id.is_some() {
+        relaxations.push((
+            "--bundle-id",
+            WindowFilter {
+                bundle_id: None,
+                ..filter.clone()
+            },
+        ));
+    }
+    if filter.pid.is_some() {
+        relaxations.push((
+            "--pid",
+            WindowFilter {
+                pid: None,
+                ..filter.clone()
+            },
+        ));
+    }
+    // Only meaningful when more than one flag was given: with a single flag,
+    // "dropping it would have matched" just restates that other windows exist.
+    if relaxations.len() > 1 {
+        let hits: Vec<(&str, usize)> = relaxations
+            .iter()
+            .map(|(name, relaxed)| (*name, all.iter().filter(|w| relaxed.matches(w)).count()))
+            .filter(|(_, n)| *n > 0)
+            .collect();
+        match hits.len() {
+            0 => {}
+            // Exactly one flag is doing the excluding — the actionable case.
+            1 => lines.push(format!(
+                "  dropping {} would have matched {} window(s) — that flag is the one excluding \
+                 everything",
+                hits[0].0, hits[0].1
+            )),
+            // Several. Saying "that flag is the one" of each would contradict
+            // itself: each *alone* is satisfiable, and it is the combination
+            // that is not — usually flags pointing at two different apps.
+            _ => lines.push(format!(
+                "  no window satisfies all of them together, though each is satisfiable alone: {} \
+                 — the flags are describing different windows",
+                hits.iter()
+                    .map(|(name, n)| format!("dropping {name} matches {n}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+        }
+    }
+
+    // A wrong --bundle-id and an app that simply has no window yet look
+    // identical from the listing, and only one of them is a typo.
+    if let Some(ref bundle_id) = filter.bundle_id {
+        let n = all
+            .iter()
+            .filter(|w| {
+                w.bundle_id
+                    .as_deref()
+                    .is_some_and(|b| b.eq_ignore_ascii_case(bundle_id))
+            })
+            .count();
+        if n == 0 {
+            let needle = bundle_id.to_lowercase();
+            // Dedup before truncating: one app owns many windows, so without
+            // this the "near-miss" list is the same bundle-id three times.
+            let mut near: Vec<String> = all
+                .iter()
+                .filter_map(|w| w.bundle_id.as_deref())
+                .filter(|b| {
+                    let b = b.to_lowercase();
+                    b.contains(&needle) || needle.contains(&b)
+                })
+                .map(|b| format!("{b:?}"))
+                .collect();
+            near.sort();
+            near.dedup();
+            near.truncate(3);
+            if near.is_empty() {
+                lines.push(format!(
+                    "  no window belongs to {bundle_id:?}; if the app is running it has not \
+                     opened a window yet — `wait-window --bundle-id` (exit 3) rather than \
+                     polling `windows`"
+                ));
+            } else {
+                lines.push(format!(
+                    "  no window belongs to {bundle_id:?} — near-miss bundle-ids present: {}",
+                    near.join(", ")
+                ));
+            }
+        }
+    }
+
+    if let Some(pid) = filter.pid {
+        if !all.iter().any(|w| w.pid == pid) {
+            lines.push(format!(
+                "  no window belongs to pid {pid} — the process may have exited, or the pid is \
+                 stale (re-resolve it with `loki app-info`)"
+            ));
+        }
+    }
+
+    // Case stopped being a cause of a miss in mesa 540, so what is left for a
+    // title is an anchoring miss: the title carries the typed text but the
+    // glob's leading or trailing anchor excluded it. Report the *trimmed*
+    // needle actually tested — the title does not contain the `*`.
+    if let Some(raw) = filter.title.as_deref() {
+        let needle = raw.trim_matches('*');
+        let lowered = needle.to_lowercase();
+        // Only a window the *glob itself* rejected is an anchoring near-miss.
+        // Without the `!matches_title` guard this happily reports a title the
+        // glob matched perfectly, when it was --bundle-id or --pid that
+        // excluded it — a diagnostic pointing at the wrong flag is worse than
+        // none, which is the whole complaint this ticket is about.
+        let mut near: Vec<String> = all
+            .iter()
+            .filter(|w| {
+                !w.title.is_empty()
+                    && !filter.matches_title(&w.title)
+                    && w.title.to_lowercase().contains(&lowered)
+            })
+            .map(|w| format!("{:?}", w.title))
+            .collect();
+        near.sort();
+        near.dedup();
+        near.truncate(3);
+        // Distinct from "the glob anchored past it": if the glob does match
+        // some title, the title is not the reason the result was empty, and
+        // the lines above have already named the flag that was.
+        let title_alone_hits = all
+            .iter()
+            .any(|w| !w.title.is_empty() && filter.matches_title(&w.title));
+        if near.is_empty() && !title_alone_hits {
+            let sample: Vec<String> = all
+                .iter()
+                .filter(|w| !w.title.is_empty())
+                .map(|w| format!("{:?}", w.title))
+                .take(3)
+                .collect();
+            lines.push(format!(
+                "  no window title contains {needle:?} — matching is case-insensitive, so this \
+                 is not a case problem; the window may not be open yet (`wait-window --title`, \
+                 exit 3). Titles present: {}{}",
+                sample.join(", "),
+                if titled > sample.len() { ", …" } else { "" }
+            ));
+        } else if !near.is_empty() {
+            lines.push(format!(
+                "  near-miss (contains {needle:?} but the glob above did not match): {}",
+                near.join(", ")
+            ));
         }
     }
 

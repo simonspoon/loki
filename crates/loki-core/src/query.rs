@@ -1,7 +1,7 @@
 use glob::{MatchOptions, Pattern};
 use serde::{Deserialize, Serialize};
 
-use crate::element::AXElement;
+use crate::element::{AXElement, WindowInfo};
 
 /// Query to find UI elements in the accessibility tree.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -255,6 +255,39 @@ impl WindowFilter {
     pub fn effective_title_pattern(&self) -> Option<String> {
         self.title.as_deref().map(auto_wrap_pattern)
     }
+
+    /// Does this window pass the whole filter?
+    ///
+    /// The driver's `list_windows` calls this rather than re-implementing the
+    /// predicate, because the diagnostic for an *empty* result works by
+    /// re-applying relaxed copies of the same filter to the unfiltered list —
+    /// and a second copy of the matching rules is the thing that goes stale
+    /// (the `--bundle-id`/`--pid` precedence lesson from mesa 549, one layer
+    /// down). If this and the listing ever disagree, the diagnostic starts
+    /// confidently explaining a miss that did not happen.
+    pub fn matches(&self, window: &WindowInfo) -> bool {
+        // Checked first because it is the cause a caller cannot see: the
+        // default listing drops untitled windows before any query runs, so a
+        // filter that matches perfectly still returns nothing.
+        if !self.include_unnamed && window.title.is_empty() {
+            return false;
+        }
+        if !self.matches_title(&window.title) {
+            return false;
+        }
+        if let Some(ref bid) = self.bundle_id {
+            match &window.bundle_id {
+                Some(wb) if wb.eq_ignore_ascii_case(bid) => {}
+                _ => return false,
+            }
+        }
+        if let Some(pid) = self.pid {
+            if window.pid != pid {
+                return false;
+            }
+        }
+        true
+    }
 }
 
 /// Wrap a bare pattern with substring globs so `"Projects"` matches any value
@@ -436,6 +469,68 @@ mod tests {
             title: Some(pattern.to_string()),
             ..Default::default()
         }
+    }
+
+    fn window(title: &str, bundle_id: Option<&str>, pid: u32) -> WindowInfo {
+        WindowInfo {
+            window_id: 1,
+            pid,
+            title: title.to_string(),
+            bundle_id: bundle_id.map(str::to_string),
+            frame: crate::element::ElementFrame {
+                x: 0.0,
+                y: 0.0,
+                width: 1.0,
+                height: 1.0,
+            },
+            is_on_screen: true,
+        }
+    }
+
+    // ── WindowFilter::matches (mesa 565) ──
+    // The listing and the empty-result diagnostic share this predicate; if it
+    // ever disagreed with `list_windows`, the diagnostic would confidently
+    // explain a miss that did not happen.
+
+    #[test]
+    fn test_window_filter_matches_all_fields() {
+        let f = WindowFilter {
+            title: Some("ash-md".into()),
+            bundle_id: Some("com.example.App".into()),
+            pid: Some(42),
+            include_unnamed: false,
+        };
+        assert!(f.matches(&window("ash-md — README", Some("com.example.app"), 42)));
+        // bundle-id compares case-insensitively, each field excludes on its own.
+        assert!(!f.matches(&window("ash-md — README", Some("com.other.app"), 42)));
+        assert!(!f.matches(&window("ash-md — README", Some("com.example.app"), 43)));
+        assert!(!f.matches(&window("Safari", Some("com.example.app"), 42)));
+        // A filter with a bundle-id never matches a window that has none.
+        assert!(!f.matches(&window("ash-md", None, 42)));
+    }
+
+    #[test]
+    fn test_window_filter_excludes_untitled_before_any_flag() {
+        // The cause mesa 565 exists to surface: an untitled window is dropped
+        // even when every flag the caller typed matches it, so nothing in the
+        // query explains the empty result. `--all` is the only relaxation.
+        let f = WindowFilter {
+            bundle_id: Some("com.example.app".into()),
+            ..Default::default()
+        };
+        let untitled = window("", Some("com.example.app"), 42);
+        assert!(!f.matches(&untitled));
+        assert!(WindowFilter {
+            include_unnamed: true,
+            ..f
+        }
+        .matches(&untitled));
+    }
+
+    #[test]
+    fn test_window_filter_default_matches_any_titled_window() {
+        assert!(WindowFilter::default().matches(&window("anything", None, 1)));
+        assert!(!WindowFilter::default().matches(&window("", None, 1)));
     }
 
     #[test]

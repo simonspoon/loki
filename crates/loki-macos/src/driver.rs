@@ -52,29 +52,9 @@ impl DesktopDriver for MacOSDriver {
     async fn list_windows(&self, filter: &WindowFilter) -> LokiResult<Vec<WindowInfo>> {
         let all = window::list_all_windows();
 
-        let filtered: Vec<WindowInfo> = all
-            .into_iter()
-            .filter(|w| {
-                if !filter.include_unnamed && w.title.is_empty() {
-                    return false;
-                }
-                if !filter.matches_title(&w.title) {
-                    return false;
-                }
-                if let Some(ref bid) = filter.bundle_id {
-                    match &w.bundle_id {
-                        Some(wb) if wb.eq_ignore_ascii_case(bid) => {}
-                        _ => return false,
-                    }
-                }
-                if let Some(pid) = filter.pid {
-                    if w.pid != pid {
-                        return false;
-                    }
-                }
-                true
-            })
-            .collect();
+        // The predicate lives on WindowFilter so the empty-result diagnostic can
+        // re-apply relaxed copies of it and be describing this exact listing.
+        let filtered: Vec<WindowInfo> = all.into_iter().filter(|w| filter.matches(w)).collect();
 
         Ok(filtered)
     }

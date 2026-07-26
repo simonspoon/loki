@@ -33,6 +33,7 @@ loki request-permission
 # Launch an app and inspect it
 loki launch com.apple.Calculator
 loki windows --title "Calculator"
+loki windows --title "Calculator" --require-match   # Exit 1 if it isn't open (default is exit 0 + a diagnostic)
 loki tree <WINDOW_ID> --depth 3
 
 # Find and click elements
